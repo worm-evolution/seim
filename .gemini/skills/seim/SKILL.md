@@ -1,18 +1,18 @@
 ---
 name: seim
-description: "Use this skill to integrate, configure, benchmark, and operate SEIM (Self-Evolving Infrastructure Middleware) in Node.js (Express, Fastify) and React applications."
+description: "Comprehensive skill for Antigravity (AGY) agents to integrate, configure, benchmark, and operate the SEIM (Self-Evolving Infrastructure Middleware v1.0.4) full-stack runtime."
 ---
 
-# SEIM — Antigravity Agent Skill Guide
+# SEIM — Antigravity Agent Skill Guide (v1.0.4)
 
 This skill enables Antigravity (AGY) agents to install, configure, debug, and autonomously operate the **SEIM (Self-Evolving Infrastructure Middleware)** full-stack runtime.
 
 ## When to Use This Skill
 - Adding autonomous product evolution (auto-scaffolding missing APIs, generating React pages from visitor 404s/journeys) to a Node.js/React project.
-- Setting up performance optimization (N+1 queries, sequential async parallelization, caching).
-- Configuring staged canary rollouts with automated <500ms rollback protection.
-- Operating the SEIM Studio Control Center (`/seim`) and Product Changelog.
-- Registering custom domain-specific optimization pattern templates.
+- Setting up Telemetry-Driven Pull Request & Staging Branch generation (`s.prGenerator`).
+- Configuring automated performance optimizations (N+1 queries, sequential async parallelization, caching) with staged canary traffic and <500ms rollback sentry.
+- Operating the Neo-Brutalist Studio Control Center (`/seim`) with Dark/Light mode and Maroon theme.
+- Registering custom domain-specific optimization pattern templates (`s.patterns.registerRegex`).
 
 ---
 
@@ -31,7 +31,8 @@ const s = seim({
   behavior: {
     enabled: true,
     autoScaffold: true,     // Autonomously build missing routes
-    minPatternFrequency: 3, // Multi-session threshold
+    minPatternFrequency: 3, // Multi-session threshold for Sybil defense
+    minIssueSessionThreshold: 3,
   },
   frontend: {
     enabled: true,
@@ -45,7 +46,7 @@ const s = seim({
 // CRITICAL: Mount listener BEFORE application routes
 app.use(s.listener());
 
-// Mount the Studio Control Center Dashboard
+// Mount the Neo-Brutalist Studio Control Center Dashboard
 app.use(s.config.studioPath, s.dashboard);
 
 // Application routes...
@@ -86,7 +87,20 @@ export default function App() {
 
 ---
 
-## 2. Registering Custom Optimization Patterns
+## 2. Telemetry-Driven PR & Staging Branch Generation
+
+```javascript
+// Generate a clean staging branch and .patch file from a detected issue
+const pr = await s.prGenerator.createPrFromIssue(issue, handlerCode);
+console.log(`Created PR #${pr.number} on branch ${pr.branchName}`);
+
+// 1-Click merge to live production
+s.prGenerator.mergePr(pr.id);
+```
+
+---
+
+## 3. Registering Custom Optimization Patterns
 
 ```javascript
 // Register regex-based custom rule
@@ -103,7 +117,7 @@ s.patterns.registerRegex(
 
 ---
 
-## 3. CLI & Operational Commands
+## 4. CLI & Operational Commands
 
 ```bash
 # Initialize SEIM in a project
@@ -121,10 +135,10 @@ npx seim rollback /api/problematic-route
 
 ---
 
-## 4. Verification & Testing Checklist
+## 5. Verification & Testing Checklist
 
 When implementing or modifying SEIM features, run:
 ```bash
 npm run build && npx jest --no-coverage --runInBand
 ```
-Ensure all 26 test suites pass cleanly.
+Ensure all 28 test suites (153 tests) pass cleanly.

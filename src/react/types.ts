@@ -33,6 +33,24 @@ export interface ConsistencyCheck {
   }[];
 }
 
+export type ReactAppFramework = 'react' | 'vite' | 'next' | 'unknown';
+export type ReactRouterKind = 'react-router' | 'next-app' | 'next-pages' | 'unknown';
+
+/** Non-secret application facts supplied to the generator and repository planner. */
+export interface ReactApplicationContext {
+  framework: ReactAppFramework;
+  router: ReactRouterKind;
+  entrypoint?: string;
+  routesFile?: string;
+  appDirectory?: string;
+  pagesDirectory?: string;
+  dependencies: string[];
+  stylingLibraries: string[];
+  stateLibraries: string[];
+  dataLibraries: string[];
+  existingRoutes: string[];
+}
+
 export interface ComponentRequest {
   name: string;           // PascalCase component name
   routePath?: string;     // React Router path
@@ -41,4 +59,5 @@ export interface ComponentRequest {
   isPage?: boolean;       // if true, register as a Route
   styleHints?: string;    // visual description/hints
   parentComponent?: string; // name of parent component to nest within
+  applicationContext?: ReactApplicationContext;
 }

@@ -93,4 +93,37 @@ describe('Sandbox', () => {
       /SEIM sandbox wall-clock timeout/
     );
   });
+
+  it('should not expose host process or global objects in the vm fallback', async () => {
+    const code = `async function handler(req, res) {
+      res.json({ process: typeof process, global: typeof global, module: typeof module });
+    }`;
+    const res = { json: jest.fn() } as any;
+
+    await sandbox.run(code, code, {} as any, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({ process: 'undefined', global: 'undefined', module: 'undefined' });
+  });
+
+  it('runs production code in isolated-vm without host globals', async () => {
+    const productionSandbox = new Sandbox(true);
+    const code = `async function handler(req, res) {
+      res.json({ process: typeof process, global: typeof global, module: typeof module, globalThis: typeof globalThis });
+    }`;
+    const res = {
+      json: jest.fn(),
+      send: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      end: jest.fn(),
+    } as any;
+
+    await productionSandbox.run(code, code, {} as any, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({
+      process: 'undefined',
+      global: 'undefined',
+      module: 'undefined',
+      globalThis: 'object',
+    });
+  });
 });

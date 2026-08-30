@@ -1,13 +1,13 @@
 import seim from '../src/index';
 
-describe('Feature Scaffolder Route Injection', () => {
+describe('Feature Scaffolder Security Boundary', () => {
   beforeEach(() => {
     if ((global as any).seimDb) {
       (global as any).seimDb.clearAll();
     }
   });
 
-  it('should dynamically scaffold a route and handle execution', async () => {
+  it('should not dynamically scaffold a route from public telemetry', async () => {
     const seimInstance = seim({
       mode: 'bypass',
       ai: { enabled: false, generatorModel: '', reviewerModel: '', verifierModel: '' },
@@ -69,11 +69,14 @@ describe('Feature Scaffolder Route Injection', () => {
 
     await listener(req, res, jest.fn());
 
-    // Allow async optimize/scaffold tasks to execute
+    // Allow any accidental async scaffold task to execute.
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    expect(mockApp.post).toHaveBeenCalledWith('/api/cart', expect.any(Function));
-    expect(routesRegistered.has('POST:/api/cart')).toBe(true);
+    expect(mockApp.post).not.toHaveBeenCalled();
+    expect(mockApp.get).not.toHaveBeenCalled();
+    expect(routesRegistered.size).toBe(0);
+    await seimInstance.shutdown();
+    return;
 
     // Get the dynamically registered handler and test it!
     const scaffoldedHandler = routesRegistered.get('POST:/api/cart')!;

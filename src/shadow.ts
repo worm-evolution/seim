@@ -88,7 +88,7 @@ export class ShadowTestEngine {
     return {
       method: req.method,
       url: req.url,
-      headers: { ...req.headers },
+      headers: { ...req.headers, 'x-seim-shadow': 'true' },
       params: { ...req.params },
       query: { ...req.query },
       body: req.body ? JSON.parse(JSON.stringify(req.body)) : undefined,
@@ -96,6 +96,8 @@ export class ShadowTestEngine {
       path: req.path,
       hostname: req.hostname,
       protocol: req.protocol,
+      isShadow: true,
+      isShadowExecution: true,
     } as unknown as Request;
   }
 

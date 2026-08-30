@@ -1,0 +1,45 @@
+name: SEIM Vercel web Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment:
+        description: Optional known-good deployment ID or URL; empty rolls back one production deployment
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seim-vercel-web-production
+  cancel-in-progress: false
+
+env:
+  VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+
+jobs:
+  rollback:
+    environment: production
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: "."
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          package-manager-cache: false
+      - run: npm install --global vercel@latest
+      - name: Roll back production
+        env:
+          TARGET_DEPLOYMENT: ${{ inputs.deployment }}
+        run: |
+          if [ -n "$TARGET_DEPLOYMENT" ]; then
+            vercel rollback "$TARGET_DEPLOYMENT" --token="${{ secrets.VERCEL_TOKEN }}"
+          else
+            vercel rollback --token="${{ secrets.VERCEL_TOKEN }}"
+          fi
+      - run: vercel rollback status --token="${{ secrets.VERCEL_TOKEN }}"

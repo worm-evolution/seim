@@ -113,4 +113,7 @@ async function run() {
   console.log('🎉 Integration Test Successful! All SEIM features working!');
 }
 
-run().catch(console.error);
+run().catch((error) => {
+  console.error('❌ Demo flow failed:', error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

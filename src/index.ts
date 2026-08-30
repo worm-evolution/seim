@@ -50,6 +50,17 @@ import { IssueStream, ProductIssue, IssueType } from './issueStream';
 import { FrontendEvolver, FrontendChange } from './frontendEvolver';
 import { ProductChangelog, ChangelogEntry } from './productChangelog';
 import { EvolutionOrchestrator } from './evolutionOrchestrator';
+import { RuntimeOptimizer } from './runtimeOptimizer';
+import { AstOptimizer } from './astOptimizer';
+import { IntentAnalyzer } from './intentAnalyzer';
+import { IntelligentOptimizer } from './intelligentOptimizer';
+import { ModuleGraph } from './moduleGraph';
+import { SyntheticFuzzer } from './fuzzer';
+import { SchemaEvolutionEngine } from './schemaEvolution';
+import { MultiModelOrchestrator } from './multiModelOrchestrator';
+import { PrGenerator } from './prGenerator';
+import { createSoftwareEngineer, connectEngineerToIssueStream } from './engineer';
+import { createGitHubFeedbackService } from './feedback';
 
 export * from './types';
 export { mergeConfig } from './config';
@@ -57,6 +68,10 @@ export { SeimEventBus } from './events';
 export { Logger, LogLevel, LogTransport, LoggerConfig } from './logger';
 export { FrameworkAdapter } from './adapters/types';
 export { EvolutionManager, CallGraph, LearnedPatternRegistry, EvolutionPipeline } from './evolution';
+export * from './engineer';
+export * from './delivery';
+export * from './feedback';
+export * from './github';
 export { CandidateLifecycleManager, CandidateStatus, LiveCandidate } from './candidateLifecycle';
 export { VersionRegistry, RuntimeVersion } from './versionRegistry';
 export { VersionDispatcher } from './versionDispatcher';
@@ -73,9 +88,9 @@ export { FrontendEvolver, FrontendChange } from './frontendEvolver';
 export { ProductChangelog, ChangelogEntry } from './productChangelog';
 export { EvolutionOrchestrator } from './evolutionOrchestrator';
 export type { CustomPattern, PatternDetector, PatternFixer } from './customPatternRegistry';
-export type { ReactComponent, FrontendRouteConfig, ComponentRequest } from './react';
+export type { ReactComponent, FrontendRouteConfig, ComponentRequest, ReactApplicationContext, ReactAppFramework, ReactRouterKind } from './react';
 
-export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance {
+function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance {
   const config = mergeConfig(userConfig);
 
   // Core infrastructure
@@ -93,7 +108,7 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
 
   const metrics = new InMemoryMetricsStore();
   const llm = new LLMClient(config);
-  const sandbox = new Sandbox();
+  const sandbox = new Sandbox(config.environment === 'production' || config.production?.requireIsolatedVm === true);
   const optimization = new OptimizationEngine(config, llm);
   
   // Persistent storage directory and file paths
@@ -113,8 +128,9 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
   const dynamicRouter = new DynamicRouter(productionManager);
 
   // Persistent learning with file-backed storage
-  const learningPath = `${storagePath}/learning.json`;
-  const patternsPath = `${storagePath}/learned-patterns.json`;
+  const usesMemoryStorage = config.storage?.type === 'memory';
+  const learningPath = usesMemoryStorage ? undefined : `${storagePath}/learning.json`;
+  const patternsPath = usesMemoryStorage ? undefined : `${storagePath}/learned-patterns.json`;
   const learning = new LearningMemoryStore(learningPath);
 
   // Evolution engine components
@@ -163,17 +179,37 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
   const reactRegistry = new ReactComponentRegistry();
   const reactGenerator = new ReactComponentGenerator(reactRegistry, llm, config, events, logger);
 
+  const softwareEngineer = createSoftwareEngineer({
+    config,
+    storagePath,
+    scaffolder,
+    reactGenerator,
+    logger,
+    events,
+  });
+  const githubFeedbackService = createGitHubFeedbackService(config, storagePath, softwareEngineer, events, logger);
+
   // Feature 3: Custom Pattern Registry — wire into optimization engine
   const customPatternRegistry = new CustomPatternRegistry();
   optimization.setCustomPatternRegistry(customPatternRegistry);
 
   // Autonomous Product Evolution System
-  const changelog = new ProductChangelog(config.changelog?.persistPath || storagePath);
+  const changelogPath = config.changelog?.persistPath ?? (usesMemoryStorage ? null : storagePath);
+  const changelog = new ProductChangelog(changelogPath);
   const frontendEvolver = new FrontendEvolver(reactGenerator, reactRegistry, config, events, logger);
   const issueStream = new IssueStream(behaviorTracker, metrics, config, events, logger);
   const orchestrator = new EvolutionOrchestrator(
     issueStream, scaffolder, frontendEvolver, changelog, dynamicRouter, sandbox, config, events, logger
   );
+
+  // Frontier Maximal Power Engines
+  const moduleGraph = new ModuleGraph();
+  const fuzzer = new SyntheticFuzzer(sandbox, logger);
+  const schemaEvolution = new SchemaEvolutionEngine(undefined, logger);
+  const multiModel = new MultiModelOrchestrator(config, logger);
+  const intentAnalyzer = new IntentAnalyzer(config, llm, logger);
+  const intelligentOptimizer = new IntelligentOptimizer(config, llm, logger);
+  const prGenerator = new PrGenerator(config, storagePath);
 
   // Load persisted state on startup
   versionManager.loadAllStates().catch((err: Error) => {
@@ -183,6 +219,7 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
   const deps = {
     metrics, optimization, validation, shadow, rollback, learning, sandbox,
     shadowLimiter, metricsAnalyzer, endpointTracker, adapter, events, logger, worker, scaffolder,
+    dynamicRouter,
   };
 
   // Start the background worker if enabled
@@ -200,6 +237,8 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
     issueStream.start();
     orchestrator.start();
   }
+
+  connectEngineerToIssueStream({ config, events, engineer: softwareEngineer, logger });
 
   // Wire learning into the optimization lifecycle via events
   events.on('optimization:promoted', async (payload: any) => {
@@ -359,6 +398,7 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
       behaviorTracker.destroy();
       issueStream.destroy();
       orchestrator.destroy();
+      await versionManager.close();
       if (behaviorDiscoveryTimer) {
         clearInterval(behaviorDiscoveryTimer);
         behaviorDiscoveryTimer = null;
@@ -418,8 +458,21 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
     reactGenerator,
     issueStream,
     orchestrator,
-    frontendEvolver,
     changelog,
+    prGenerator,
+    scaffolder,
+    runtimeOptimizer: RuntimeOptimizer,
+    astOptimizer: AstOptimizer,
+    moduleGraph,
+    fuzzer,
+    schemaEvolution,
+    multiModel,
+    intentAnalyzer,
+    intelligentOptimizer,
+    engineer: softwareEngineer,
+    applicationControlPlane: softwareEngineer.applicationControlPlane,
+    githubFeedback: githubFeedbackService?.loop,
+    githubWebhook: githubFeedbackService?.handler,
   };
 
   // Wire up studio dashboard ONCE with the fully-built instance (single source of truth)
@@ -431,7 +484,7 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
     'optimization:rolledback', 'feature:discovered', 'feature:deployed',
     'frontend:component_generated', 'frontend:evolved', 'issue:detected',
     'issue:resolved', 'metrics:threshold', 'error:sandbox', 'error:validation',
-    'lifecycle:started',
+    'lifecycle:started', 'engineer:application-handed-off', 'engineer:goal-created', 'engineer:task-updated', 'engineer:job-created', 'engineer:approval-required', 'engineer:pull-request-created', 'engineer:job-rejected', 'engineer:deployed', 'engineer:rolled-back', 'engineer:delivery-feedback',
   ];
   for (const ev of studioEvents) {
     events.on(ev, (payload: any) => pushStudioEvent(ev, payload));
@@ -446,5 +499,17 @@ export default function seim(userConfig: Partial<SeimConfig> = {}): SeimInstance
   return instance;
 }
 
-export { seim };
-
+export default seim;
+export {
+  seim,
+  RuntimeOptimizer,
+  AstOptimizer,
+  ModuleGraph,
+  SyntheticFuzzer,
+  SchemaEvolutionEngine,
+  MultiModelOrchestrator,
+  IntentAnalyzer,
+  IntelligentOptimizer,
+  PrGenerator,
+};
+export { createAuthGuard } from './auth';

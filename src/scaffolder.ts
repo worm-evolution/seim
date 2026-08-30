@@ -143,17 +143,32 @@ export class FeatureScaffolder {
       `;
     }
 
-    const systemPrompt = `You are a senior Node.js software architect. Generate a clean Express router callback handler function.
-You must use the global in-memory DB: global.seimDb.collection(name) which supports async:
-- insert(doc) -> Promise<doc>
-- find(query) -> Promise<doc[]>
-- update(query, updates) -> Promise<count>
-- remove(query) -> Promise<count>
+    const systemPrompt = `You are a Principal Backend Architect. Generate a production-ready Express route handler function for a modern API.
+The handler must be an \`async function handler(req, res)\`.
 
-Do not import external packages. Respond ONLY with the javascript handler code block containing the handler function itself. Do not include markdown code block tokens.`;
+Requirements:
+1. Input Validation: Extract and validate required query params or body fields. Return 400 with a helpful JSON error if required inputs are missing.
+2. In-Memory / Database Collection Access: Use the async global DB via \`global.seimDb.collection(collectionName)\`:
+   - \`await collection.insert(doc)\` -> returns inserted doc with \`_id\`
+   - \`await collection.find(query)\` -> returns array of matching docs
+   - \`await collection.update(query, updates)\` -> returns count updated
+   - \`await collection.remove(query)\` -> returns count removed
+3. Return proper HTTP status codes:
+   - 200 for successful GET/PUT
+   - 201 for successful POST resource creation
+   - 204 or 200 for successful DELETE
+   - 400 for bad request / missing validation
+   - 404 if a queried resource is not found
+4. Return structured JSON responses: \`{ success: true, ...data }\` or \`{ success: false, error: "..." }\`.
+5. Wrap execution in try/catch to safely return 500 without crashing the server.
 
-    const userPrompt = `Generate an Express route handler for: ${method.toUpperCase()} ${path}
-Intent: ${intent}`;
+Do not import external packages. Respond ONLY with the javascript code containing the \`async function handler(req, res) { ... }\` declaration. Do not include markdown code block characters.`;
+
+    const userPrompt = `Method: ${method.toUpperCase()}
+Path: ${path}
+Intent & Business Goal: ${intent}
+
+Generate the complete, robust Express route handler.`;
 
     const rawCode = await this.llm.chat(systemPrompt, userPrompt);
     

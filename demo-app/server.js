@@ -6,7 +6,7 @@ const { seim } = require('seim-core');
 const app = express();
 const PORT = 3005;
 
-app.use(cors());
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:3005' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -32,6 +32,9 @@ global.users = Array.from({ length: 500 }, (_, i) => ({
 
 // 2. Initialize SEIM Configuration (Production Configurations with File Storage)
 const seimConfig = {
+  // This demo intentionally exercises the full automatic promotion loop.
+  // Production deployments should leave this false and approve candidates manually.
+  autonomousPromotion: true,
   mode: 'bypass',
   environment: 'production',
   framework: 'express',

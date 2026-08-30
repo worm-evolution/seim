@@ -51,7 +51,7 @@ export class VersionManager {
     const versionNumber = this.generateVersionNumber(existingVersions);
     
     const newVersion: EndpointVersion = {
-      id: `${routeKey}::${versionNumber}::${Date.now()}`,
+      id: `${routeKey}::${versionNumber}::${Date.now()}::${Math.random().toString(36).slice(2, 8)}`,
       routeKey,
       version: versionNumber,
       type: metadata.createdBy === 'ai' ? 'optimized' : 'original',
@@ -96,7 +96,7 @@ export class VersionManager {
     
     // Record transition
     const transition: VersionTransition = {
-      id: `transition::${Date.now()}`,
+      id: `transition::${Date.now()}::${Math.random().toString(36).slice(2, 8)}`,
       routeKey,
       fromVersion: previousActiveVersionId || 'none',
       toVersion: versionId,

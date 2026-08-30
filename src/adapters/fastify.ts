@@ -8,7 +8,7 @@ import { normalizePath } from '../routeNormalizer';
  * plugin that registers `onRequest` and `onResponse` hooks.
  *
  * Usage:
- *   const seim = require('seim').default;
+ *   const { seim } = require('seim-core');
  *   const s = seim({ framework: 'fastify' });
  *   fastify.register(s.plugin());
  */

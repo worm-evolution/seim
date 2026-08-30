@@ -3,6 +3,8 @@ import { InMemoryMetricsStore } from './metrics';
 import { SeimConfig } from './types';
 import { SeimEventBus } from './events';
 import { Logger } from './logger';
+import { IntentAnalyzer } from './intentAnalyzer';
+import { LLMClient } from './ai';
 
 export type IssueType =
   | 'bug:5xx_spike'
@@ -28,11 +30,13 @@ export interface ProductIssue {
   detectedAt: number;
   updatedAt: number;
   status: 'open' | 'in_progress' | 'resolved' | 'dismissed';
+  intentMetadata?: Record<string, any>;
 }
 
 export class IssueStream {
   private issues: Map<string, ProductIssue> = new Map();
   private checkTimer: NodeJS.Timeout | null = null;
+  private intentAnalyzer?: IntentAnalyzer;
   private readonly BLOCKED_PATTERNS = [
     /\.env/i,
     /wp-admin/i,
@@ -53,7 +57,14 @@ export class IssueStream {
     private config: SeimConfig,
     private events: SeimEventBus,
     private logger: Logger,
-  ) {}
+    intentAnalyzer?: IntentAnalyzer,
+  ) {
+    if (intentAnalyzer) {
+      this.intentAnalyzer = intentAnalyzer;
+    } else if (config.ai?.apiKey) {
+      this.intentAnalyzer = new IntentAnalyzer(config, new LLMClient(config), logger);
+    }
+  }
 
   public start(): void {
     const interval = this.config.behavior?.issueCheckIntervalMs || 60000;
@@ -78,7 +89,7 @@ export class IssueStream {
     const missing = this.tracker.getMissingFeatures(this.config.behavior?.minPatternFrequency || 3);
     for (const m of missing) {
       if (this.isBlocked(m.path)) continue;
-      if (m.sessions < minSessions && m.count < 5) continue;
+      if (m.sessions < minSessions) continue;
 
       const isApi = m.path.startsWith('/api/') || m.path.startsWith('/v1/') || m.path.startsWith('/v2/');
       const type: IssueType = isApi ? 'feature:missing_api' : 'feature:missing_page';
@@ -129,6 +140,9 @@ export class IssueStream {
     // 3. Scan for UX Navigation Loops & Drop-offs
     const patterns = this.tracker.analyze();
     for (const p of patterns) {
+      if (this.isBlocked(p.path)) continue;
+      if (p.affectedSessions < minSessions) continue;
+
       if (p.type === 'navigation_loop' || p.type === 'drop_off') {
         const id = `issue_ux_${p.type}_${p.path}`;
         const issue: ProductIssue = {
@@ -162,8 +176,7 @@ export class IssueStream {
     if (!existing) {
       this.issues.set(issue.id, issue);
       detected.push(issue);
-      (this.events as any).emitEvent?.('issue:detected', issue);
-      (this.events as any).emit?.('issue:detected', issue);
+      this.events.emitEvent('issue:detected', issue);
     } else if (existing.status === 'open') {
       existing.frequency = issue.frequency;
       existing.affectedSessions = issue.affectedSessions;
@@ -185,8 +198,7 @@ export class IssueStream {
     if (issue) {
       issue.status = 'resolved';
       issue.updatedAt = Date.now();
-      (this.events as any).emitEvent?.('issue:resolved', issue);
-      (this.events as any).emit?.('issue:resolved', issue);
+      this.events.emitEvent('issue:resolved', issue);
     }
   }
 
@@ -195,8 +207,7 @@ export class IssueStream {
     if (issue) {
       issue.status = 'dismissed';
       issue.updatedAt = Date.now();
-      (this.events as any).emitEvent?.('issue:dismissed', issue);
-      (this.events as any).emit?.('issue:dismissed', issue);
+      this.events.emitEvent('issue:dismissed', issue);
     }
   }
 

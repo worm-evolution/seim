@@ -36,7 +36,7 @@ export class EvolutionOrchestrator {
 
   public start(): void {
     this.events.on('issue:detected', async (issue: ProductIssue) => {
-      if (this.config.mode === 'bypass' && this.config.behavior?.autoScaffold) {
+      if (this.config.mode === 'bypass' && this.config.behavior?.autoScaffold && !this.config.engineer?.enabled) {
         await this.handleIssue(issue);
       }
     });

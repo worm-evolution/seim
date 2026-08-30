@@ -1,41 +1,23 @@
----
-name: seim-devin
-description: "Devin execution playbook and skill for deploying, diagnosing, and maintaining SEIM self-evolving middleware."
----
+# SEIM — Devin Playbook (v1.0.4)
 
-# SEIM — Devin Playbook & Skill
+## Project Summary
+SEIM is an autonomous, full-stack self-evolving infrastructure middleware for Node.js (Express, Fastify) and React.
 
-This skill defines the operational runbook and troubleshooting steps for Cognition AI's Devin agent.
+## Environment & Build Setup
+- **Node.js**: Requires Node.js 18+
+- **Build**: `npm run build`
+- **Unit & Integration Tests**: `npx jest --no-coverage --runInBand` (current baseline: 42 test suites, 206 tests)
+- **Benchmark Suite**: `npm run test:benchmark`
 
-## Setup & Environment Verification
-1. **Node.js Environment:** Verify Node $\ge 18.0.0$ via `node -v`.
-2. **Build Verification:** Run `npm run build` and ensure `dist/` is produced with no TypeScript errors.
-3. **Test Suite:** Execute `npm test -- --runInBand` and verify all 26 test suites pass (147 tests).
-
-## Common Task Workflows
-
-### Task 1: Integrating SEIM into a New or Existing App
-1. Add `seim-core` to `package.json` dependencies.
-2. In the server entry point (e.g. `server.js` or `app.ts`), import `seim` and initialize with:
-   ```javascript
-   const { seim } = require('seim-core');
-   const s = seim({ mode: 'bypass', behavior: { enabled: true, autoScaffold: true } });
-   app.use(s.listener());
-   app.use(s.config.studioPath, s.dashboard);
-   ```
-3. In the React app, import `seimGeneratedRoutes` from `src/seim-generated/seim-routes` inside `<Routes>`.
-
-### Task 2: Diagnosing Performance or Rollback Events
-1. Check Studio API: `curl http://localhost:3000/seim/api/changelog` to see recent rollbacks.
-2. Check Issue Stream: `curl http://localhost:3000/seim/api/issues` for 5xx spikes or unhandled errors.
-3. Inspect sandbox errors via `GET /seim/api/events`.
-4. Trigger manual rollback if necessary:
-   ```bash
-   npx seim rollback <routeKey>
-   ```
-
-## Verification Checklist
-- [ ] TypeScript compilation exits `0` (`npm run build`)
-- [ ] Jest test suite completes with 100% pass rate (`npm test`)
-- [ ] No high/critical vulnerabilities (`npm audit`)
-- [ ] Background intervals call `.unref()` to avoid dangling handles
+## Key Workflows
+1. **Telemetry & Issue Stream**:
+   - `src/behaviorTracker.ts`: Ingests real visitor journey telemetry.
+   - `src/issueStream.ts`: Discovers missing APIs, 5xx bugs, and UX loops with Sybil-resistant filtering.
+2. **Scaffolding & PR Engine**:
+   - `src/prGenerator.ts`: Generates staging branches and `.patch` files.
+   - `src/scaffolder.ts` & `src/frontendEvolver.ts`: Generates Express route handlers and React TSX components into `src/seim-generated/`.
+3. **Execution & Routing**:
+   - `src/dynamicRouter.ts`: Hot-swaps and routes dynamic handlers with parameter matching.
+   - `src/sandbox.ts`: Safely executes code with `vm` or `isolated-vm`.
+4. **Studio Dashboard**:
+   - `src/studio.ts`: Neo-Brutalist dashboard (Dark/Light mode, maroon theme `#800020`, zero emojis).

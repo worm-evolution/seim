@@ -86,12 +86,13 @@ export function getDefaultConfig(): SeimConfig {
     },
     evolution: { ...DEFAULT_EVOLUTION_CONFIG },
     autonomousPromotion: false,
+    engineer: { enabled: false, repository: "memory", persistence: "memory", maxVerificationMs: 600000 },
   };
 }
 
 export function mergeConfig(user: Partial<SeimConfig> = {}): SeimConfig {
   // Auto-discover config from project files if no config passed
-  const fileConfig = loadConfigFromFile() || {};
+  const fileConfig = loadConfigFromFile(process.cwd(), { allowJavaScript: process.env.SEIM_ALLOW_JS_CONFIG === 'true' }) || {};
   const effective = { ...fileConfig, ...user };
 
   const defaults = getDefaultConfig();
@@ -141,12 +142,31 @@ export function mergeConfig(user: Partial<SeimConfig> = {}): SeimConfig {
       enabled: true,
       ...(effective.patterns ?? {}),
     },
+    engineer: {
+      enabled: false,
+      repository: "memory",
+      persistence: "memory",
+      maxVerificationMs: 600000,
+      ...(effective.engineer ?? {}),
+      feedback: {
+        enabled: false,
+        maxPayloadBytes: 1048576,
+        maxTransientRetries: 1,
+        maxRepairsPerFingerprint: 2,
+        ...(effective.engineer?.feedback ?? {}),
+      },
+    },
 
   };
 
+  const supportedStorageTypes = new Set(['memory', 'file', 'redis']);
+  if (!supportedStorageTypes.has(String(merged.storage?.type))) {
+    throw new Error(`Unsupported storage.type: ${String(merged.storage?.type)}. Use "memory", "file", or "redis".`);
+  }
+
   if (merged.environment === 'production') {
     if (merged.storage?.type === 'memory') {
-      throw new Error('Production environment requires persistent storage. Set storage.type to "redis" (or "sqlite" when supported) and provide storage.connection.');
+      throw new Error('Production environment requires persistent storage. Set storage.type to "file" or "redis".');
     }
     if (merged.storage?.type === 'redis' && !merged.storage?.connection) {
       throw new Error('Production environment with Redis requires storage.connection (Redis URL).');

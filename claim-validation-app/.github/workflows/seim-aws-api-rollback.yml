@@ -1,0 +1,49 @@
+name: SEIM AWS ECS api Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Full known-good ECR image URI including immutable tag or digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: seim-aws-api-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.AWS_ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.AWS_ECS_SERVICE }}
+
+jobs:
+  rollback:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Render known-good image
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ".aws/task-definition.json"
+          container-name: "app"
+          image: ${{ inputs.image }}
+      - name: Deploy rollback and wait for stability
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

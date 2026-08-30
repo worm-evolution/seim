@@ -1,0 +1,12 @@
+:root {
+  font-family: Inter, system-ui, sans-serif;
+  color: #18201b;
+  background: #f3f6f1;
+}
+
+body { margin: 0; }
+.shell { width: min(1080px, calc(100% - 2rem)); margin: 0 auto; padding: 3rem 0; }
+.hero { padding: 2rem; color: white; background: #183f2b; border-radius: 1rem; }
+.eyebrow { text-transform: uppercase; letter-spacing: 0.12em; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+.card { padding: 1.25rem; background: white; border: 1px solid #d8e1da; border-radius: 0.75rem; }

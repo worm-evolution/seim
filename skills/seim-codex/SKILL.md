@@ -1,33 +1,10 @@
----
-name: seim-codex
-description: "Codex and OpenAI Assistant skill for working with SEIM autonomous self-evolving infrastructure."
----
+# SEIM — Codex & Cursor Agent Rules (v1.0.4)
 
-# SEIM — Codex & OpenAI Assistant Skill
+You are working on SEIM, an autonomous self-evolving infrastructure middleware for Node.js and React.
 
-This skill provides system instructions and tool usage patterns for Codex and OpenAI Assistant models to interact with SEIM.
-
-## Key APIs & Integrations
-
-### Initializing the Runtime
-```javascript
-const { seim } = require('seim-core');
-
-const s = seim({
-  mode: 'bypass', // 'bypass' = autonomous evolution; 'restrict' = observe-only
-  behavior: { enabled: true, autoScaffold: true, minPatternFrequency: 3 },
-  frontend: { enabled: true, outputDir: './src/seim-generated' },
-});
-```
-
-### Triaging Issues & Evolving Features
-- **Query Active Issues:** `s.issueStream.getOpenIssues()`
-- **Evolve Candidate Solution:** `s.orchestrator.handleIssue(issue)`
-- **Check Changelog:** `s.changelog.getRecent()`
-- **Rollback Route:** `s.changelog.rollback('/path', 'Reason')`
-
-## Build & Test Commands
-```bash
-npm run build
-npx jest --no-coverage
-```
+## Core Rules & Invariants
+1. **Zero Downtime Routing**: Dynamic routes registered in `DynamicRouter` must resolve seamlessly via `DynamicRouter.getHandler()` with support for parameterized paths (`:id`).
+2. **Strict Sybil Resistance**: `IssueStream` must strictly enforce multi-session consensus (`affectedSessions >= minSessions`) before flagging any 404 as a missing feature.
+3. **Sandbox Safety**: `Sandbox.runVm` and `Sandbox.runIsolated` must safely execute handlers even if defined as full `async function handler(req, res)` declarations or raw statements.
+4. **Neo-Brutalist UI**: The Studio Control Center at `/seim` strictly uses zero emojis, monospaced status badges (`[SHIPPED]`, `[PULL REQUESTS]`, `[ISSUES]`, `[LIVE]`), tactile drop-shadows, and a Maroon (`#800020`) brand accent in light mode.
+5. **Testing Verification**: Always verify changes by running `npm run build && npx jest --no-coverage --runInBand` (current baseline: 42 test suites, 206 tests).

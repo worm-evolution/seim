@@ -1,6 +1,7 @@
 import { RequestHandler } from 'express';
 import { ProductionManager } from './productionManager';
 import { StableCanaryAssigner, CanaryAssigner } from './canaryAssignment';
+import { normalizePath } from './routeNormalizer';
 
 export class DynamicRouter {
   private originalHandlers: Map<string, RequestHandler> = new Map();
@@ -27,22 +28,44 @@ export class DynamicRouter {
     this.originalHandlers.set(routeKey, handler);
   }
 
+  public hasHandler(routeKey: string): boolean {
+    if (this.optimizedHandlers.has(routeKey) || this.originalHandlers.has(routeKey)) return true;
+    const parts = routeKey.split(' ');
+    if (parts.length === 2) {
+      const normalizedKey = `${parts[0]} ${normalizePath(parts[1])}`;
+      return this.optimizedHandlers.has(normalizedKey) || this.originalHandlers.has(normalizedKey);
+    }
+    return false;
+  }
+
   public getHandler(routeKey: string, req?: any): RequestHandler {
     const deployment = this.productionManager.getDeployment(routeKey);
     
+    let optHandler = this.optimizedHandlers.get(routeKey);
+    let origHandler = this.originalHandlers.get(routeKey);
+
+    if (!optHandler && !origHandler) {
+      const parts = routeKey.split(' ');
+      if (parts.length === 2) {
+        const normalizedKey = `${parts[0]} ${normalizePath(parts[1])}`;
+        optHandler = this.optimizedHandlers.get(normalizedKey);
+        origHandler = this.originalHandlers.get(normalizedKey);
+      }
+    }
+
     // If no deployment or original version, return original handler
     if (!deployment || deployment.version === 'original') {
-      return this.originalHandlers.get(routeKey) || this.fallbackHandler(routeKey);
+      return origHandler || optHandler || this.fallbackHandler(routeKey);
     }
 
     // If optimized version, check canary percentage via stable hash assigner
     const shouldUseOptimized = this.canaryAssigner.shouldUseCanary(req, deployment.canaryPercent);
     
     if (shouldUseOptimized) {
-      return this.optimizedHandlers.get(routeKey) || this.originalHandlers.get(routeKey) || this.fallbackHandler(routeKey);
+      return optHandler || origHandler || this.fallbackHandler(routeKey);
     }
     
-    return this.originalHandlers.get(routeKey) || this.fallbackHandler(routeKey);
+    return origHandler || optHandler || this.fallbackHandler(routeKey);
   }
 
   public createDynamicMiddleware(routeKey: string): RequestHandler {

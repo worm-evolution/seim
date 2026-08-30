@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = {
 };
 
 const STARTER_SERVER = `const express = require('express');
-const { seim } = require('seim');
+const { seim } = require('seim-core');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,7 +63,7 @@ function makePackageJson(name: string): string {
     version: '1.0.0',
     main: 'server.js',
     scripts: { start: 'node server.js', dev: 'node --watch server.js' },
-    dependencies: { express: '^4.18.2', seim: 'latest' },
+    dependencies: { express: '^4.18.2', 'seim-core': 'latest' },
   }, null, 2) + '\n';
 }
 
@@ -107,7 +107,7 @@ export async function initCommand(_args: string[]): Promise<void> {
     console.log('');
     console.log('📦 Existing project — add these 3 lines to your server file:');
     console.log('');
-    console.log("   const { seim } = require('seim');");
+    console.log("   const { seim } = require('seim-core');");
     console.log('   const s = seim();                               // reads .seimrc.json');
     console.log('   app.use(s.listener());                          // BEFORE your routes');
     console.log("   app.use(s.config.studioPath, s.dashboard);      // optional dashboard at /seim");

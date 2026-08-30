@@ -22,9 +22,10 @@ export class LLMClient {
 
   constructor(private config: SeimConfig) {
     this.apiKey = config.ai.apiKey;
-    this.baseUrl = config.ai.baseUrl || 'https://api.openai.com/v1/chat/completions';
-    this.provider = config.ai.provider || this.detectProvider(this.baseUrl);
+    const configuredBaseUrl = config.ai.baseUrl;
+    this.provider = config.ai.provider || this.detectProvider(configuredBaseUrl || 'https://api.openai.com/v1/chat/completions');
     this.model = config.ai.generatorModel || this.defaultModel();
+    this.baseUrl = configuredBaseUrl || this.defaultBaseUrl();
     this.headers = config.ai.headers;
     this.responsePath = config.ai.responsePath || this.defaultResponsePath();
   }
@@ -218,6 +219,19 @@ export class LLMClient {
         return 'grok-2';
       default:
         return 'gpt-4';
+    }
+  }
+
+  private defaultBaseUrl(): string {
+    switch (this.provider) {
+      case 'anthropic':
+        return 'https://api.anthropic.com/v1/messages';
+      case 'google':
+        return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`;
+      case 'grok':
+        return 'https://api.x.ai/v1/chat/completions';
+      default:
+        return 'https://api.openai.com/v1/chat/completions';
     }
   }
 

@@ -1,5 +1,4 @@
-import { StorageAdapter } from './persistentVersionManager';
-import { FileStorageAdapter } from './persistentVersionManager';
+import { StorageAdapter, FileStorageAdapter, MemoryStorageAdapter } from './persistentVersionManager';
 import { RedisStorageAdapter } from './redisStorageAdapter';
 import { SeimConfig } from './types';
 
@@ -11,6 +10,11 @@ export function createStorageAdapter(config: SeimConfig): StorageAdapter {
     return new RedisStorageAdapter(connection);
   }
 
-  // For development or default, fall back to file-based persistence.
-  return new FileStorageAdapter(config.storagePath ?? './.seim-storage');
+  if (type === 'file') {
+    return new FileStorageAdapter(config.storagePath ?? './.seim-storage');
+  }
+  if (type === 'memory') {
+    return new MemoryStorageAdapter();
+  }
+  throw new Error(`Unsupported storage.type: ${String(type)}`);
 }

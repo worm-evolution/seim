@@ -1,18 +1,10 @@
-# SEIM — Cursor & Codex Agent Rules
+# SEIM — Codex & Cursor Agent Rules (v1.0.4)
 
-## Project Context
-SEIM (Self-Evolving Infrastructure Middleware) is an autonomous, full-stack self-evolving middleware for Node.js (Express/Fastify) and React.
+You are working on SEIM, an autonomous self-evolving infrastructure middleware for Node.js and React.
 
-## Core Rules for Codex / Cursor Agents
-1. **Middleware Placement:** In Express applications, `app.use(s.listener())` must always be mounted BEFORE application routes to capture metrics and user journeys.
-2. **Type Safety:** All source code in `src/` must compile with strict TypeScript (`npm run build`). Avoid `any` where concrete interfaces exist in `src/types.ts`.
-3. **Safety & Sandboxing:** Never bypass the `SecurityGate` (`src/security.ts`). Candidate code modifying credentials, authorization, payments, or accessing `process.env` must be rejected.
-4. **Non-Destructive Frontend Generation:** Write generated React components to `src/seim-generated/` and maintain `seim-routes.tsx`. Do not overwrite user-authored routes outside the designated directory.
-5. **Testing Requirement:** Always verify changes by running `npm test`. All 26 test suites must pass before declaring work complete.
-
-## Quick Reference
-- Main Entry: `src/index.ts`
-- Issue Stream: `src/issueStream.ts`
-- Evolution Orchestrator: `src/evolutionOrchestrator.ts`
-- Frontend Evolver: `src/frontendEvolver.ts`
-- Product Changelog: `src/productChangelog.ts`
+## Core Rules & Invariants
+1. **Zero Downtime Routing**: Dynamic routes registered in `DynamicRouter` must resolve seamlessly via `DynamicRouter.getHandler()` with support for parameterized paths (`:id`).
+2. **Strict Sybil Resistance**: `IssueStream` must strictly enforce multi-session consensus (`affectedSessions >= minSessions`) before flagging any 404 as a missing feature.
+3. **Sandbox Safety**: `Sandbox.runVm` and `Sandbox.runIsolated` must safely execute handlers even if defined as full `async function handler(req, res)` declarations or raw statements.
+4. **Neo-Brutalist UI**: The Studio Control Center at `/seim` strictly uses zero emojis, monospaced status badges (`[SHIPPED]`, `[PULL REQUESTS]`, `[ISSUES]`, `[LIVE]`), tactile drop-shadows, and a Maroon (`#800020`) brand accent in light mode.
+5. **Testing Verification**: Always verify changes by running `npm run build && npx jest --no-coverage --runInBand` (28 test suites, 153 tests).

@@ -1,0 +1,25 @@
+{
+  "name": "seim-claim-validation-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A real Express and React baseline used to validate SEIM's published claims",
+  "scripts": {
+    "build": "vite build",
+    "server": "node server.js",
+    "check": "node scripts/claim-check.js",
+    "test": "npm run build && npm run check",
+    "check:providers": "node scripts/provider-check.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.23.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "redis": "^6.2.1",
+    "seim-core": "file:vendor/current/seim-core-1.0.6.tgz"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^7.3.6"
+  }
+}

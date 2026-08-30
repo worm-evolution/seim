@@ -11,6 +11,8 @@ Usage: seim <command> [options]
 
 Commands:
   init                  Scaffold a .seimrc.json config file
+  handoff [dir]         Inspect an existing app and create .seim/handoff.json
+  delivery [dir]        Generate GitHub Actions for --vercel and/or --aws
   status [url]          Show status of a running seim instance
   analyze <file>        Offline static analysis of a route file
   benchmark <url>       Run a simple benchmark against a URL
@@ -23,6 +25,8 @@ Options:
 
 Examples:
   seim init
+  seim handoff .
+  seim delivery . --vercel --aws
   seim status http://localhost:3000
   seim analyze ./routes/users.js
   seim benchmark http://localhost:3000/api/users
@@ -51,6 +55,16 @@ async function main(): Promise<void> {
       case 'init': {
         const { initCommand } = require('./commands/init');
         await initCommand(args.slice(1));
+        break;
+      }
+      case 'handoff': {
+        const { handoffCommand } = require('./commands/handoff');
+        await handoffCommand(args.slice(1));
+        break;
+      }
+      case 'delivery': {
+        const { deliveryCommand } = require('./commands/delivery');
+        await deliveryCommand(args.slice(1));
         break;
       }
       case 'status': {

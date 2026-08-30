@@ -3,6 +3,7 @@ import { LLMClient } from './ai';
 import { EndpointTracker } from './endpointTracker';
 import { LearningMemoryStore, LearningContext } from './learning';
 import { CustomPatternRegistry } from './customPatternRegistry';
+import { AstOptimizer } from './astOptimizer';
 
 export class OptimizationEngine {
   private customPatterns?: CustomPatternRegistry;
@@ -190,6 +191,8 @@ export class OptimizationEngine {
     let modified = sourceCode;
     switch (patternId) {
       case 'sequential-async': {
+        const astResult = AstOptimizer.optimizeSequentialAsync(sourceCode);
+        if (astResult.applied) return astResult.code;
         const transformed = sourceCode.replace(
           /const\s+(\w+)\s*=\s*await\s+([^;]+);\s*\n\s*const\s+(\w+)\s*=\s*await\s+([^;]+);/,
           'const [$1, $3] = await Promise.all([$2, $4]);'
@@ -198,6 +201,8 @@ export class OptimizationEngine {
         break;
       }
       case 'n-plus-one': {
+        const astResult = AstOptimizer.optimizeNPlusOne(sourceCode);
+        if (astResult.applied) return astResult.code;
         // Transform: for(...) { await fn(...) } → collect IDs then batch with Promise.all
         modified = sourceCode.replace(
           /for\s*\(([^)]*)\)\s*\{([^}]*)(await\s+(\w+)\(([^)]*)\))([^}]*)\}/,

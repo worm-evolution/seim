@@ -17,6 +17,7 @@ import { Logger } from './logger';
 import { OptimizationWorker } from './worker';
 import { FeatureScaffolder } from './scaffolder';
 import { CandidateLifecycleManager, ShadowSample } from './candidateLifecycle';
+import { DynamicRouter } from './dynamicRouter';
 
 interface MiddlewareDeps {
   metrics: InMemoryMetricsStore;
@@ -34,6 +35,7 @@ interface MiddlewareDeps {
   logger: Logger;
   worker: OptimizationWorker;
   scaffolder: FeatureScaffolder;
+  dynamicRouter?: DynamicRouter;
 }
 
 export function createListener(
@@ -218,23 +220,18 @@ export function createListener(
           return res.json?.({ ok: true }) || res.send({ ok: true });
         }
 
-        const originalSend = res.send;
-        res.send = function(body: any) {
-          const contentType = res.getHeader?.('content-type') || res.get?.('content-type') || '';
-          if (body && contentType.includes('text/html')) {
-            let html = typeof body === 'string' ? body : body.toString('utf8');
-            const overrides = frontendOverrides.get(req.path) || { css: '', js: '' };
-            const sensorScript = `<script src="/seim/sensor.js" defer></script>`;
-            const styleOverride = overrides.css ? `<style id="seim-overrides">${overrides.css}</style>` : '';
-            const jsOverride = overrides.js ? `<script id="seim-js-overrides">${overrides.js}</script>` : '';
-            
-            html = html.replace('</head>', `${styleOverride}${jsOverride}</head>`);
-            html = html.replace('</body>', `${sensorScript}</body>`);
-            
-            body = typeof body === 'string' ? html : Buffer.from(html, 'utf8');
+        // Intercept dynamically scaffolded routes and evolved handlers
+        const method = (req.method || 'GET').toUpperCase();
+        const routePath = req.path || req.url || '/';
+        const routeKey = `${method} ${routePath}`;
+        if (deps.dynamicRouter && deps.dynamicRouter.hasHandler(routeKey)) {
+          const dynamicHandler = deps.dynamicRouter.getHandler(routeKey, req);
+          if (dynamicHandler) {
+            return dynamicHandler(req, res, next);
           }
-          return originalSend.call(this, body);
-        };
+        }
+
+        installFrontendInstrumentation(req, res);
 
         innerMiddleware(req, res, next);
       };
@@ -248,18 +245,94 @@ export function createListener(
   };
 }
 
-function processTelemetry(config: SeimConfig, deps: MiddlewareDeps, body: any, req: any): void {
-  const { logger, events } = deps;
-  const path = body.path || '/';
-  
-  if (body.type === '404_intent' && config.scaffolding?.enabled) {
-    handleScaffoldIntent(config, deps, body, req).catch(err => {
-      logger.warn('Failed to scaffold dynamic route from intent', { path: body.path, error: err.message });
-    });
+const MAX_INSTRUMENTED_HTML_BYTES = 2 * 1024 * 1024;
+
+function installFrontendInstrumentation(req: any, res: any): void {
+  if (req.method === 'HEAD') return;
+
+  // Express static/sendFile streams through write/end rather than res.send.
+  // Buffer only bounded HTML responses; every non-HTML response keeps its
+  // original streaming behavior.
+  if (typeof res.write === 'function' && typeof res.end === 'function') {
+    const originalWrite = res.write;
+    const originalEnd = res.end;
+    let buffered: Buffer[] = [];
+    let bufferedBytes = 0;
+    let passthrough = false;
+
+    const isHtml = (): boolean => String(res.getHeader?.('content-type') || res.get?.('content-type') || '').toLowerCase().includes('text/html');
+    const toBuffer = (chunk: any, encoding?: BufferEncoding): Buffer => Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+
+    res.write = function(chunk: any, encoding?: BufferEncoding | (() => void), callback?: () => void): boolean {
+      if (passthrough || !isHtml()) return originalWrite.call(this, chunk, encoding as any, callback);
+      const actualEncoding = typeof encoding === 'string' ? encoding : undefined;
+      const actualCallback = typeof encoding === 'function' ? encoding : callback;
+      const value = toBuffer(chunk, actualEncoding);
+      if (bufferedBytes + value.length > MAX_INSTRUMENTED_HTML_BYTES) {
+        passthrough = true;
+        for (const previous of buffered) originalWrite.call(this, previous);
+        buffered = [];
+        bufferedBytes = 0;
+        return originalWrite.call(this, value, actualCallback);
+      }
+      buffered.push(value);
+      bufferedBytes += value.length;
+      if (actualCallback) process.nextTick(actualCallback);
+      return true;
+    };
+
+    res.end = function(chunk?: any, encoding?: BufferEncoding | (() => void), callback?: () => void): any {
+      if (passthrough || !isHtml()) return originalEnd.call(this, chunk, encoding as any, callback);
+      const actualEncoding = typeof encoding === 'string' ? encoding : undefined;
+      const actualCallback = typeof encoding === 'function' ? encoding : callback;
+      if (chunk !== undefined && chunk !== null) {
+        const value = toBuffer(chunk, actualEncoding);
+        if (bufferedBytes + value.length > MAX_INSTRUMENTED_HTML_BYTES) {
+          for (const previous of buffered) originalWrite.call(this, previous);
+          buffered = [];
+          return originalEnd.call(this, value, actualCallback);
+        }
+        buffered.push(value);
+      }
+      const body = Buffer.concat(buffered).toString('utf8');
+      const instrumented = instrumentFrontendHtml(body, req.path || req.url || '/');
+      res.removeHeader?.('content-length');
+      return originalEnd.call(this, Buffer.from(instrumented, 'utf8'), actualCallback);
+    };
     return;
   }
 
-  const issues = body.issues || [];
+  // Retain compatibility with lightweight response implementations and tests.
+  if (typeof res.send === 'function') {
+    const originalSend = res.send;
+    res.send = function(body: any) {
+      const contentType = res.getHeader?.('content-type') || res.get?.('content-type') || '';
+      if (body && String(contentType).includes('text/html')) {
+        const html = instrumentFrontendHtml(typeof body === 'string' ? body : body.toString('utf8'), req.path || req.url || '/');
+        body = typeof body === 'string' ? html : Buffer.from(html, 'utf8');
+      }
+      return originalSend.call(this, body);
+    };
+  }
+}
+
+function instrumentFrontendHtml(html: string, requestPath: string): string {
+  if (!html || !/<\/?(?:html|body)(?:\s|>)/i.test(html)) return html;
+  const overrides = frontendOverrides.get(requestPath) || { css: '', js: '' };
+  const sensorScript = `<script src="/seim/sensor.js" defer></script>`;
+  const styleOverride = overrides.css ? `<style id="seim-overrides">${overrides.css}</style>` : '';
+  let result = html;
+  if (styleOverride && !result.includes('id="seim-overrides"')) result = result.replace(/<\/head>/i, `${styleOverride}</head>`);
+  if (!result.includes('src="/seim/sensor.js"')) result = result.replace(/<\/body>/i, `${sensorScript}</body>`);
+  return result;
+}
+
+function processTelemetry(config: SeimConfig, deps: MiddlewareDeps, body: any, req: any): void {
+  const { logger, events } = deps;
+  if (!isPlainObject(body)) return;
+  const path = normalizeTelemetryPath(body.path);
+  if (!path) return;
+  const issues = normalizeTelemetryIssues(body.issues);
   if (issues.length === 0) return;
 
   logger.info('Received frontend telemetry diagnostics', { path, issueCount: issues.length });
@@ -269,35 +342,6 @@ function processTelemetry(config: SeimConfig, deps: MiddlewareDeps, body: any, r
     optimizeFrontendForTelemetry(config, deps, path, issues).catch(err => {
       logger.warn('Failed to optimize frontend for telemetry', { path, error: err.message });
     });
-  }
-}
-
-async function handleScaffoldIntent(config: SeimConfig, deps: MiddlewareDeps, body: any, req: any): Promise<void> {
-  const { scaffolder, sandbox, logger } = deps;
-  const path = body.path;
-  const method = body.method || 'POST';
-  const intent = body.intent || 'dynamic feature handler';
-
-  logger.info(`Autonomous scaffolder generating route: ${method} ${path} with intent: "${intent}"`);
-
-  // Generate code via scaffolder
-  const code = await scaffolder.scaffoldRoute(method, path, intent);
-
-  // Wrap in sandbox candidate
-  const mockCandidate = {
-    id: `scaffolded-${Date.now()}`,
-    optimizedCode: code,
-    originalCode: '',
-  };
-  const sandboxedHandler = buildOptimizedHandler(mockCandidate as any, sandbox, config.experiment.sandboxTimeoutMs || 5000);
-
-  // Inject route directly on active Express app
-  const app = req.app;
-  if (app && typeof app[method.toLowerCase()] === 'function') {
-    app[method.toLowerCase()](path, sandboxedHandler);
-    logger.info(`Successfully injected and hot-swapped route handler: ${method} ${path}`);
-  } else {
-    logger.warn(`Could not inject route handler: req.app is not a valid Express instance`);
   }
 }
 
@@ -510,7 +554,41 @@ export const frontendOverrides = new Map<string, { css: string; js: string }>();
 // Telemetry optimization helper using the LLM client
 async function optimizeFrontendForTelemetry(config: SeimConfig, deps: MiddlewareDeps, path: string, issues: any[]): Promise<void> {
   const overrides = await deps.optimization.llm.generateFrontendOverrides(path, issues);
-  setEvictingMap(frontendOverrides, path, overrides);
+  setEvictingMap(frontendOverrides, path, {
+    css: sanitizeFrontendCss(overrides?.css),
+    js: '',
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeTelemetryPath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200 || !value.startsWith('/')) return undefined;
+  if (/[\u0000-\u001f<>"'`\\]/.test(value)) return undefined;
+  return value;
+}
+
+function normalizeTelemetryIssues(value: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 25).filter(isPlainObject).map((issue) => {
+    const safe: Record<string, string> = {};
+    for (const key of ['type', 'element', 'selector', 'message', 'value']) {
+      if (typeof issue[key] === 'string' && issue[key].length <= 500 && !/[\u0000-\u001f<>`]/.test(issue[key])) {
+        safe[key] = issue[key];
+      }
+    }
+    return safe;
+  }).filter(issue => Object.keys(issue).length > 0);
+}
+
+function sanitizeFrontendCss(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 16_384) return '';
+  if (/<|>|url\s*\(|@import|expression\s*\(|javascript\s*:|behavior\s*:/i.test(value)) return '';
+  return value;
 }
 
 // Sandboxed client-side diagnostics telemetry sensor script

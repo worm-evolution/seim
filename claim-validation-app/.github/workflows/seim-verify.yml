@@ -1,0 +1,34 @@
+name: SEIM Verification
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seim-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          package-manager-cache: false
+      - name: Install dependencies
+        run: |
+          npm ci
+      - name: Test
+        run: |
+          npm run build && npm run check
+      - name: Build
+        run: |
+          vite build

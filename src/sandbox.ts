@@ -9,11 +9,14 @@ const BUILTINS = new Set([
 export class Sandbox {
   private ivm: any | undefined;
 
-  constructor() {
+  constructor(private readonly requireIsolatedVm = false) {
+    if (!requireIsolatedVm) return;
     try {
       this.ivm = require('isolated-vm');
     } catch {
-      // Fall back to the built-in vm module if isolated-vm is not installed.
+      if (this.requireIsolatedVm) {
+        throw new Error('SEIM production requires isolated-vm; install the optional isolated-vm dependency before starting.');
+      }
     }
   }
 
@@ -49,10 +52,14 @@ export class Sandbox {
     try {
       const reqSnapshot = this.snapshotRequest(req);
 
-      context.global.setSync('__resJson', new this.ivm.Reference(res.json.bind(res)));
-      context.global.setSync('__resSend', new this.ivm.Reference(res.send.bind(res)));
-      context.global.setSync('__resStatus', new this.ivm.Reference(res.status.bind(res)));
-      context.global.setSync('__resEnd', new this.ivm.Reference(res.end.bind(res)));
+      const json = typeof res.json === 'function' ? res.json.bind(res) : () => undefined;
+      const send = typeof res.send === 'function' ? res.send.bind(res) : () => undefined;
+      const status = typeof res.status === 'function' ? res.status.bind(res) : () => res;
+      const end = typeof res.end === 'function' ? res.end.bind(res) : () => undefined;
+      context.global.setSync('__resJson', new this.ivm.Reference(json));
+      context.global.setSync('__resSend', new this.ivm.Reference(send));
+      context.global.setSync('__resStatus', new this.ivm.Reference(status));
+      context.global.setSync('__resEnd', new this.ivm.Reference(end));
       context.global.setSync('req', new this.ivm.ExternalCopy(reqSnapshot).copyInto());
 
       // Bind dynamic in-memory database functions for isolated-vm execution
@@ -88,7 +95,7 @@ export class Sandbox {
           }
         };
 
-        global.seimDb = {
+        globalThis.seimDb = {
           collection: function(name) {
             return {
               insert: function(doc) {
@@ -112,9 +119,9 @@ export class Sandbox {
         };
       `);
 
-      const script = isolate.compileScriptSync(`(async function() {\n${body}\n})`);
-      const fn = script.runSync(context);
-      const result = await fn.apply(undefined, [], { timeout: timeoutMs, result: { promise: true } });
+      const script = isolate.compileScriptSync(`(async function() {\n${body}\nif (typeof handler === 'function') { return await handler(req, res); }\n})`);
+      const fn = script.runSync(context, { reference: true });
+      const result = await fn.apply(undefined, [], { timeout: timeoutMs, result: { promise: true, copy: true } });
       isolate.dispose();
       return result;
     } catch (err) {
@@ -129,7 +136,6 @@ export class Sandbox {
     const closureFns = this.extractClosureFunctions(originalSource);
 
     const context = vm.createContext({
-      ...global,
       console,
       Buffer,
       Promise,
@@ -162,7 +168,7 @@ export class Sandbox {
       ...closureFns,
     });
 
-    const wrapped = `(async (req, res) => {\n${body}\n})(req, res)`;
+    const wrapped = `(async (req, res) => {\n${body}\nif (typeof handler === 'function') { return await handler(req, res); }\n})(req, res)`;
     const script = new vm.Script(wrapped, { filename: 'seim-shadow.js' });
     const start = Date.now();
     
@@ -202,22 +208,19 @@ export class Sandbox {
       // Skip keywords
       if (['if', 'for', 'while', 'switch', 'return', 'throw', 'new', 'typeof', 'void', 'delete', 'async', 'await', 'const', 'let', 'var', 'function'].includes(name)) continue;
       seen.add(name);
-      // We can't actually extract the real closure function without access to the
-      // original scope, so we leave it as undefined — the optimized code should
-      // not introduce new function calls that didn't exist in the original.
     }
     return fns;
   }
 
   private extractFunctionBody(fnSource: string): string {
-    const trimmed = fnSource.trim();
-    let m = trimmed.match(/^async\s+function\s*[\w]*\s*\([^)]*\)\s*\{([\s\S]*)\}$/);
+    const trimmed = fnSource.trim().replace(/^;+|;+$/g, '');
+    let m = trimmed.match(/^(?:async\s+)?function\s*[\w]*\s*\([^)]*\)\s*\{([\s\S]*)\}\s*;?$/);
     if (m) return m[1].trim();
-    m = trimmed.match(/^function\s*[\w]*\s*\([^)]*\)\s*\{([\s\S]*)\}$/);
+    m = trimmed.match(/^(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*)\}\s*;?$/);
     if (m) return m[1].trim();
-    m = trimmed.match(/^(?:async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*)\}$/);
+    m = trimmed.match(/^(?:async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*)\}\s*;?$/);
     if (m) return m[1].trim();
-    m = trimmed.match(/=\s*(?:async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*)\}$/);
+    m = trimmed.match(/=\s*(?:async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*)\}\s*;?$/);
     if (m) return m[1].trim();
     return trimmed;
   }

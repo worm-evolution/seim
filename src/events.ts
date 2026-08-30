@@ -1,7 +1,23 @@
 import { EventEmitter } from 'events';
+import type { ProductIssue } from './issueStream';
+import type { EngineerJob, ApplicationRegistration, EngineeringPlan, EngineeringTask } from './engineer/types';
 import { OptimizationCandidate, ExperimentReport, OptimizationExplanation } from './types';
+import type { DeliveryFeedbackRecord } from './feedback/types';
 
 export interface SeimEvents {
+  'issue:detected': ProductIssue;
+  'issue:resolved': ProductIssue;
+  'issue:dismissed': ProductIssue;
+  'engineer:job-created': EngineerJob;
+  'engineer:application-handed-off': ApplicationRegistration;
+  'engineer:goal-created': EngineeringPlan;
+  'engineer:task-updated': EngineeringTask;
+  'engineer:approval-required': { job: EngineerJob; reasons: string[] };
+  'engineer:pull-request-created': EngineerJob;
+  'engineer:job-rejected': EngineerJob;
+  'engineer:deployed': EngineerJob;
+  'engineer:rolled-back': EngineerJob;
+  'engineer:delivery-feedback': DeliveryFeedbackRecord;
   'optimization:detected': { routeKey: string; pattern: string; severity: string; candidateId: string };
   'optimization:validated': { routeKey: string; candidateId: string; report: any };
   'optimization:promoted': { routeKey: string; candidateId: string; latencyImprovement: number };

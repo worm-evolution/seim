@@ -35,6 +35,7 @@ export class FrontendEvolver {
         name: componentName,
         routePath: issue.path,
         intent: issue.suggestedAction,
+        applicationContext: this.config.frontend?.applicationContext,
         isPage: true,
       });
 

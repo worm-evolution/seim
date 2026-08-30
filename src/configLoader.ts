@@ -12,7 +12,7 @@ import { SeimConfig } from './types';
  *
  * Returns undefined if none found.
  */
-export function loadConfigFromFile(cwd: string = process.cwd()): Partial<SeimConfig> | undefined {
+export function loadConfigFromFile(cwd: string = process.cwd(), options: { allowJavaScript?: boolean } = {}): Partial<SeimConfig> | undefined {
   // 1. .seimrc.json
   const rcPath = path.join(cwd, '.seimrc.json');
   if (fs.existsSync(rcPath)) {
@@ -26,7 +26,7 @@ export function loadConfigFromFile(cwd: string = process.cwd()): Partial<SeimCon
 
   // 2. seim.config.js
   const jsPath = path.join(cwd, 'seim.config.js');
-  if (fs.existsSync(jsPath)) {
+  if (options.allowJavaScript === true && fs.existsSync(jsPath)) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(jsPath);

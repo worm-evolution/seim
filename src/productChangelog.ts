@@ -20,10 +20,10 @@ export interface ChangelogEntry {
 export class ProductChangelog {
   private entries: ChangelogEntry[] = [];
   private readonly MAX_ENTRIES = 500;
-  private persistPath: string;
+  private persistPath?: string;
 
-  constructor(storagePath: string = './.seim-storage') {
-    this.persistPath = path.join(storagePath, 'changelog.json');
+  constructor(storagePath: string | null = './.seim-storage') {
+    this.persistPath = storagePath ? path.join(storagePath, 'changelog.json') : undefined;
     this.load();
   }
 
@@ -100,6 +100,7 @@ export class ProductChangelog {
   }
 
   private save(): void {
+    if (!this.persistPath) return;
     try {
       const dir = path.dirname(this.persistPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -112,6 +113,7 @@ export class ProductChangelog {
   }
 
   private load(): void {
+    if (!this.persistPath) return;
     try {
       if (fs.existsSync(this.persistPath)) {
         this.entries = JSON.parse(fs.readFileSync(this.persistPath, 'utf8'));

@@ -1,5 +1,7 @@
 import { Request, Response, RequestHandler } from 'express';
 import { SeimInstance } from './types';
+import { createAuthGuard } from './auth';
+import { handleEngineerApi } from './studio/engineerApi';
 
 // Internal event ring-buffer per studio handler
 const studioEventLog: Array<{ ts: number; event: string; payload: any }> = [];
@@ -7,7 +9,7 @@ const MAX_EVENTS = 100;
 
 /** Push an event into the studio event ring buffer (called from index.ts) */
 export function pushStudioEvent(event: string, payload: any): void {
-  studioEventLog.push({ ts: Date.now(), event, payload });
+  studioEventLog.push({ ts: Date.now(), event, payload: sanitizeStudioPayload(payload) });
   if (studioEventLog.length > MAX_EVENTS) studioEventLog.shift();
 }
 
@@ -20,7 +22,25 @@ export function pushStudioEvent(event: string, payload: any): void {
  * called before `index.ts` finished wiring everything in.
  */
 export function createStudioHandler(instance: SeimInstance): RequestHandler {
-  return (req: Request, res: Response): void => {
+  const authGuard = createAuthGuard(instance.config);
+
+  return async (req: Request, res: Response, next?: any): Promise<void> => {
+    let isAuthorized = false;
+    authGuard(req, res, () => { isAuthorized = true; });
+    if (!isAuthorized) {
+      return;
+    }
+
+    if (isMutation(req) && !isSameOriginRequest(req)) {
+      res.status(403).json({ success: false, error: 'Cross-origin Studio mutations are not allowed' });
+      return;
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+
     const p = req.path || req.url || '';
     if (p.endsWith('/api/status') || p.endsWith('/status')) {
       const statusData = instance && typeof instance.status === 'function' ? instance.status() : {};
@@ -32,7 +52,6 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
       return;
     }
     if (p.endsWith('/api/candidates')) {
-      // listAll() is async — must await
       const store = instance?.candidateStore;
       if (!store) { res.json([]); return; }
       Promise.resolve(store.listAll ? store.listAll() : []).then((list: any[]) => {
@@ -55,6 +74,44 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
       const openIssues = instance?.issueStream ? instance.issueStream.getOpenIssues() : [];
       const allIssues = instance?.issueStream ? instance.issueStream.getAllIssues() : [];
       res.json({ open: openIssues, all: allIssues });
+      return;
+    }
+    if (p.includes('/api/engineer/') && await handleEngineerApi(req, res, instance)) {
+      return;
+    }
+    if (p.endsWith('/api/pull-requests')) {
+      const prs = instance?.prGenerator ? instance.prGenerator.listAll() : [];
+      res.json(prs);
+      return;
+    }
+    if (p.endsWith('/api/create-pr') && req.method === 'POST') {
+      const body = req.body || {};
+      const { issueId, routeKey, code } = body;
+      if (instance?.prGenerator) {
+        if (issueId && instance?.issueStream) {
+          const issue = instance.issueStream.getAllIssues().find((i: any) => i.id === issueId);
+          if (issue) {
+            const generatedCode = code || (instance?.scaffolder ? await instance.scaffolder.scaffoldRoute(issue.method || 'GET', issue.path, issue.suggestedAction) : '// Scaffolded route');
+            const pr = await instance.prGenerator.createPrFromIssue(issue, generatedCode);
+            res.json({ success: true, pr });
+            return;
+          }
+        } else if (routeKey) {
+          const pr = await instance.prGenerator.createPrFromOptimization(
+            routeKey,
+            body.originalCode || '',
+            body.optimizedCode || code || '',
+            body.latencyImprovement || '50ms'
+          );
+          res.json({ success: true, pr });
+          return;
+        }
+      }
+      res.status(400).json({ success: false, error: 'Could not create PR. Ensure issueId or routeKey is provided.' });
+      return;
+    }
+    if (p.endsWith('/api/merge-pr') && req.method === 'POST') {
+      res.status(410).json({ success: false, error: 'Legacy in-memory PR merging is disabled. Use the authenticated engineer control-plane merge workflow.' });
       return;
     }
     if (p.endsWith('/api/evolve-issue') && req.method === 'POST') {
@@ -93,7 +150,7 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
       if (req.method === 'POST') {
         const body = req.body || {};
         const routeKey = body.routeKey || body.route;
-        const reason = body.reason || 'Manual rollback via CLI/API';
+        const reason = body.reason || 'Manual rollback via Studio';
         if (!routeKey) {
           res.status(400).json({ success: false, error: 'routeKey is required' });
           return;
@@ -119,183 +176,225 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
       res.json({ success, routeKey, message: success ? 'Candidate promoted to production' : 'Promotion failed' });
       return;
     }
+
     res.setHeader('Content-Type', 'text/html');
     res.send(`<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SEIM — Autonomous App Control Center</title>
+  <title>SEIM CONTROL CENTER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #0b0f19;
-      --card-bg: #111827;
-      --card-border: #1f2937;
-      --text-main: #f3f4f6;
-      --text-muted: #9ca3af;
-      --accent-blue: #38bdf8;
-      --accent-purple: #a855f7;
-      --accent-green: #10b981;
-      --accent-amber: #f59e0b;
-      --accent-rose: #f43f5e;
+      --bg: #0c0c0e;
+      --card-bg: #141418;
+      --card-border: #ffffff;
+      --border: #ffffff;
+      --text: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --maroon: #800020;
+      --maroon-accent: #e11d48;
+      --accent: #38bdf8;
+      --accent-green: #4ade80;
+      --accent-amber: #fbbf24;
+      --accent-rose: #f87171;
+      --shadow: 4px 4px 0px #000000;
+      --btn-shadow: 3px 3px 0px #ffffff;
     }
+
+    [data-theme="light"] {
+      --bg: #fcf9f5;
+      --card-bg: #ffffff;
+      --card-border: #111111;
+      --border: #111111;
+      --text: #111111;
+      --text-muted: #52525b;
+      --maroon: #800020;
+      --maroon-accent: #800020;
+      --accent: #800020;
+      --accent-green: #15803d;
+      --accent-amber: #b45309;
+      --accent-rose: #b91c1c;
+      --shadow: 4px 4px 0px #800020;
+      --btn-shadow: 3px 3px 0px #111111;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      background: var(--bg-dark);
-      color: var(--text-main);
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      transition: background 0.15s ease, color 0.15s ease;
     }
+
     header {
-      background: rgba(17, 24, 39, 0.8);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--card-border);
+      background: var(--card-bg);
+      border-bottom: 3px solid var(--border);
       padding: 1rem 2rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      position: sticky;
-      top: 0;
-      z-index: 50;
     }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      font-size: 1.25rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, #38bdf8 0%, #a855f7 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-    .logo-badge {
-      font-size: 0.7rem;
-      padding: 0.2rem 0.6rem;
-      border-radius: 9999px;
-      background: rgba(56, 189, 248, 0.1);
-      border: 1px solid rgba(56, 189, 248, 0.3);
-      color: var(--accent-blue);
-      -webkit-text-fill-color: var(--accent-blue);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .header-right {
+
+    .logo-box {
       display: flex;
       align-items: center;
       gap: 1rem;
     }
-    .status-pill {
+    .logo-badge {
+      background: var(--maroon);
+      color: #ffffff;
+      font-family: 'Space Mono', monospace;
+      font-weight: 700;
+      font-size: 1.25rem;
+      padding: 0.35rem 0.75rem;
+      border: 2px solid var(--border);
+      box-shadow: var(--btn-shadow);
+      letter-spacing: 1px;
+    }
+    .logo-title {
+      font-size: 1.1rem;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .header-actions {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      padding: 0.4rem 0.8rem;
-      border-radius: 9999px;
-      font-size: 0.85rem;
-      font-weight: 500;
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: var(--accent-green);
+      gap: 1rem;
     }
-    .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
+
+    .btn {
+      font-family: 'Space Mono', monospace;
+      font-weight: 700;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      padding: 0.45rem 0.9rem;
+      background: var(--card-bg);
+      color: var(--text);
+      border: 2px solid var(--border);
+      box-shadow: var(--btn-shadow);
+      cursor: pointer;
+      border-radius: 0px;
+      transition: all 0.08s ease;
+    }
+    .btn:hover {
+      transform: translate(-1px, -1px);
+      box-shadow: 4px 4px 0px var(--border);
+    }
+    .btn:active {
+      transform: translate(2px, 2px);
+      box-shadow: 1px 1px 0px var(--border);
+    }
+
+    .btn-maroon {
+      background: var(--maroon);
+      color: #ffffff;
+      border-color: var(--border);
+    }
+    .btn-green {
       background: var(--accent-green);
-      box-shadow: 0 0 10px var(--accent-green);
-      animation: pulse 2s infinite;
+      color: #000000;
+      border-color: var(--border);
     }
-    @keyframes pulse {
-      0% { opacity: 0.4; }
-      50% { opacity: 1; transform: scale(1.2); }
-      100% { opacity: 0.4; }
+    .btn-rose {
+      background: var(--accent-rose);
+      color: #ffffff;
+      border-color: var(--border);
     }
+
     main {
       flex: 1;
-      max-width: 1400px;
-      width: 100%;
-      margin: 0 auto;
       padding: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
       display: flex;
       flex-direction: column;
       gap: 2rem;
     }
+
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1.25rem;
     }
+
     .card {
       background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 0.75rem;
-      padding: 1.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-    .card:hover {
-      border-color: rgba(56, 189, 248, 0.4);
-      transform: translateY(-2px);
+      border: 2px solid var(--border);
+      box-shadow: var(--shadow);
+      padding: 1.25rem;
+      border-radius: 0px;
+      position: relative;
     }
     .card-title {
-      font-size: 0.85rem;
-      font-weight: 500;
-      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.78rem;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
     }
     .card-value {
-      font-size: 2rem;
+      font-family: 'Space Mono', monospace;
+      font-size: 1.85rem;
       font-weight: 700;
-      color: var(--text-main);
+      margin-bottom: 0.25rem;
     }
     .card-subtext {
       font-size: 0.8rem;
       color: var(--text-muted);
     }
+
     .nav-tabs {
       display: flex;
+      flex-wrap: wrap;
       gap: 0.5rem;
-      border-bottom: 1px solid var(--card-border);
-      padding-bottom: 0.5rem;
+      border-bottom: 3px solid var(--border);
+      padding-bottom: 0.75rem;
     }
     .tab-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      padding: 0.6rem 1.2rem;
-      font-size: 0.95rem;
-      font-weight: 500;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0.55rem 1rem;
+      background: var(--card-bg);
+      color: var(--text);
+      border: 2px solid var(--border);
+      box-shadow: var(--btn-shadow);
       cursor: pointer;
-      border-radius: 0.5rem;
-      transition: all 0.2s ease;
+      border-radius: 0px;
+      transition: all 0.08s ease;
+    }
+    .tab-btn:hover {
+      transform: translate(-1px, -1px);
+      box-shadow: 4px 4px 0px var(--border);
     }
     .tab-btn.active {
-      background: rgba(56, 189, 248, 0.1);
-      color: var(--accent-blue);
+      background: var(--maroon);
+      color: #ffffff;
+      border-color: var(--border);
+      transform: translate(2px, 2px);
+      box-shadow: 1px 1px 0px var(--border);
     }
-    .tab-btn:hover:not(.active) {
-      color: var(--text-main);
-      background: rgba(255, 255, 255, 0.05);
-    }
-    .tab-content {
-      display: none;
-    }
-    .tab-content.active {
-      display: block;
-    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
     .table-container {
       background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 0.75rem;
-      overflow: hidden;
+      border: 2px solid var(--border);
+      box-shadow: var(--shadow);
+      overflow-x: auto;
     }
     table {
       width: 100%;
@@ -304,289 +403,302 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
       font-size: 0.9rem;
     }
     th {
-      background: rgba(31, 41, 55, 0.5);
-      padding: 1rem 1.25rem;
-      color: var(--text-muted);
-      font-weight: 600;
-      border-bottom: 1px solid var(--card-border);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      background: var(--card-bg);
+      border-bottom: 2px solid var(--border);
+      padding: 0.85rem 1.25rem;
+      font-weight: 700;
     }
     td {
-      padding: 1rem 1.25rem;
-      border-bottom: 1px solid var(--card-border);
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      font-family: 'Inter', sans-serif;
     }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255, 255, 255, 0.02); }
-    .badge {
+
+    .tag {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid var(--border);
       display: inline-block;
-      padding: 0.25rem 0.6rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
     }
-    .badge-green { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-blue { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.3); }
-    .badge-purple { background: rgba(168, 85, 247, 0.15); color: var(--accent-purple); border: 1px solid rgba(168, 85, 247, 0.3); }
-    .badge-amber { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
-    .explain-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 0.75rem;
-      padding: 1.25rem;
-      margin-bottom: 1rem;
-    }
-    .explain-header {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 0.5rem;
-    }
+    .tag-maroon { background: var(--maroon); color: #ffffff; }
+    .tag-green { background: var(--accent-green); color: #000000; }
+    .tag-amber { background: var(--accent-amber); color: #000000; }
+    .tag-rose { background: var(--accent-rose); color: #ffffff; }
+
     pre {
-      background: #090d16;
-      border: 1px solid var(--card-border);
-      padding: 1.25rem;
-      border-radius: 0.5rem;
-      overflow-x: auto;
-      font-family: monospace;
+      font-family: 'Space Mono', monospace;
       font-size: 0.85rem;
-      color: #38bdf8;
-    }
-    .non-tech-banner {
-      background: linear-gradient(135deg, rgba(56, 189, 248, 0.1) 0%, rgba(168, 85, 247, 0.1) 100%);
-      border: 1px solid rgba(56, 189, 248, 0.2);
-      border-radius: 0.75rem;
-      padding: 1.25rem 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 1.5rem;
-    }
-    .non-tech-icon {
-      font-size: 2rem;
+      background: var(--bg);
+      color: var(--text);
+      padding: 1rem;
+      border: 2px solid var(--border);
+      overflow-x: auto;
     }
   </style>
 </head>
 <body>
   <header>
-    <div class="logo">
-      <span>⚡ SEIM</span>
-      <span class="logo-badge">Control Center</span>
+    <div class="logo-box">
+      <div class="logo-badge">SEIM</div>
+      <div class="logo-title">Control Center</div>
     </div>
-    <div class="header-right">
-      <div class="status-pill">
-        <span class="pulse-dot"></span>
-        <span id="sys-mode">Autonomous Mode: ${instance.config.mode.toUpperCase()}</span>
-      </div>
+    <div class="header-actions">
+      <span class="tag tag-maroon" id="val-mode">MODE: ${instance.config.mode.toUpperCase()}</span>
+      <button class="btn" id="theme-toggle-btn" onclick="toggleTheme()">[ THEME: LIGHT ]</button>
     </div>
   </header>
 
   <main>
-    <div class="non-tech-banner">
-      <div class="non-tech-icon">🧠</div>
-      <div>
-        <h3 style="font-size: 1.05rem; font-weight: 600; margin-bottom: 0.2rem;">Full-Stack Application Health & Self-Evolution</h3>
-        <p style="font-size: 0.85rem; color: var(--text-muted);">
-          SEIM is actively monitoring your web application traffic, tuning route performance, and ensuring error-free operation in real time.
-        </p>
-      </div>
-    </div>
-
-    <!-- Top Key Metrics -->
+    <!-- Metric Cards -->
     <div class="stats-grid">
       <div class="card">
-        <div class="card-title">System Operational Status</div>
-        <div class="card-value" style="color: var(--accent-green);" id="val-health">100% Healthy</div>
-        <div class="card-subtext" id="sub-framework">Framework: ${instance.config.framework || 'express'}</div>
+        <div class="card-title">OPERATIONAL STATUS</div>
+        <div class="card-value" style="color: var(--accent-green);" id="val-health">HEALTHY</div>
+        <div class="card-subtext">Framework: ${instance.config.framework || 'express'}</div>
       </div>
       <div class="card">
-        <div class="card-title">Autonomous Optimizations</div>
-        <div class="card-value" style="color: var(--accent-blue);" id="val-opts">0</div>
-        <div class="card-subtext">Applied safely off request path</div>
+        <div class="card-title">SHIPPED EVOLUTIONS</div>
+        <div class="card-value" style="color: var(--maroon-accent);" id="val-shipped-count">0</div>
+        <div class="card-subtext">Autonomously deployed</div>
       </div>
       <div class="card">
-        <div class="card-title">Active Route Versions</div>
-        <div class="card-value" style="color: var(--accent-purple);" id="val-versions">0</div>
-        <div class="card-subtext">Optimized candidates promoted</div>
+        <div class="card-title">OPEN PR PROPOSALS</div>
+        <div class="card-value" style="color: var(--accent-amber);" id="val-pr-count">0</div>
+      <div class="card-subtext">Awaiting review and delivery policy</div>
       </div>
       <div class="card">
-        <div class="card-title">Safety Rollbacks</div>
-        <div class="card-value" style="color: var(--accent-amber);" id="val-rollbacks">0</div>
-        <div class="card-subtext">Automated regression protection</div>
+        <div class="card-title">SAFETY ROLLBACKS</div>
+        <div class="card-value" style="color: var(--accent-rose);" id="val-rollbacks">0</div>
+        <div class="card-subtext">Automated regression sentry</div>
       </div>
     </div>
 
     <!-- Navigation Tabs -->
-    <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('shipped')">🚀 Shipped Evolution</button>
-      <button class="tab-btn" onclick="switchTab('issues')">🔍 Issue Stream</button>
-      <button class="tab-btn" onclick="switchTab('overview')">📊 Route Telemetry</button>
-      <button class="tab-btn" onclick="switchTab('optimizations')">🧬 Candidates & Diffs</button>
-      <button class="tab-btn" onclick="switchTab('behavior')">🧠 Visitor Behavior & React</button>
-      <button class="tab-btn" onclick="switchTab('events')">⚡ Live Events</button>
-      <button class="tab-btn" onclick="switchTab('developer')">🛠️ Raw JSON State</button>
+    <div class="nav-tabs" role="tablist" aria-label="SEIM control center sections">
+      <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-shipped" onclick="switchTab('shipped', this)">[ SHIPPED EVOLUTION ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-prs" onclick="switchTab('prs', this)">[ PULL REQUESTS ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-issues" onclick="switchTab('issues', this)">[ ISSUE STREAM ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-overview" onclick="switchTab('overview', this)">[ ROUTE TELEMETRY ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-optimizations" onclick="switchTab('optimizations', this)">[ CANDIDATES & DIFFS ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-behavior" onclick="switchTab('behavior', this)">[ VISITOR BEHAVIOR ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-events" onclick="switchTab('events', this)">[ LIVE EVENTS ]</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-developer" onclick="switchTab('developer', this)">[ RAW STATE ]</button>
     </div>
 
-    <!-- Tab 0: Shipped Evolution (Timeline) -->
-    <div id="tab-shipped" class="tab-content active">
-      <div class="explain-card">
-        <div class="explain-header">
-          <strong style="color: var(--accent-green);">🚀 Product Evolution Timeline (Shipped Automatically)</strong>
-          <span class="badge badge-green" id="shipped-count-badge">0 Changes Shipped</span>
-        </div>
-        <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1rem;">
-          Continuous changelog of autonomous features, runtime bug fixes, UX refinements, and performance upgrades shipped to production by SEIM.
-        </p>
-        <div id="changelog-list" style="display: flex; flex-direction: column; gap: 0.85rem;">
-          <div style="color: var(--text-muted); font-size: 0.85rem;">No autonomous changes shipped yet. Real-time visitor activity will trigger evolution.</div>
+    <!-- Tab 1: Shipped Evolution Timeline -->
+    <div id="tab-shipped" class="tab-content active" role="tabpanel" tabindex="0">
+      <div class="card">
+        <div class="card-title" style="color: var(--text);">PRODUCT EVOLUTION TIMELINE</div>
+        <div id="changelog-list" style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">No autonomous changes recorded yet. Real-time visitor activity will trigger evolution.</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab 0.5: Issue Stream -->
-    <div id="tab-issues" class="tab-content">
-      <div class="explain-card">
-        <div class="explain-header">
-          <strong style="color: var(--accent-amber);">🔍 Detected Product Issues & Feature Opportunities</strong>
-          <span class="badge badge-amber" id="issues-count-badge">0 Open Issues</span>
+    <!-- Tab 2: Staging PRs -->
+    <div id="tab-prs" class="tab-content" role="tabpanel" tabindex="0">
+      <div class="card">
+        <div class="card-title" style="color: var(--text);">TELEMETRY-DRIVEN PULL REQUESTS & STAGING BRANCHES</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; margin-bottom: 1rem;">
+          SEIM identifies real visitor demand, writes clean production-grade code to a staging branch, and opens a Pull Request for 1-click approval.
         </div>
-        <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1rem;">
-          Real-time stream of 5xx runtime bugs, missing API 404s, user drop-offs, and circular navigation loops detected across user sessions.
-        </p>
-        <div id="issues-list" style="display: flex; flex-direction: column; gap: 0.85rem;">
-          <div style="color: var(--text-muted); font-size: 0.85rem;">No open issues detected across active visitor sessions.</div>
+        <div id="prs-list" style="display: flex; flex-direction: column; gap: 1rem;">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">No open pull requests generated. Click [GENERATE PR] on any detected issue or candidate below.</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab 1: Overview -->
-    <div id="tab-overview" class="tab-content">
+    <!-- Tab 3: Issue Stream -->
+    <div id="tab-issues" class="tab-content" role="tabpanel" tabindex="0">
+      <div class="card">
+        <div class="card-title" style="color: var(--text);">DETECTED ISSUES & FEATURE OPPORTUNITIES</div>
+        <div id="issues-list" style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">No open issues detected across active visitor sessions. All systems healthy.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Route Telemetry -->
+    <div id="tab-overview" class="tab-content" role="tabpanel" tabindex="0">
       <div class="table-container">
         <table>
           <thead>
             <tr>
-              <th>Route Endpoint</th>
-              <th>Traffic Volume</th>
-              <th>Avg Latency</th>
-              <th>Active Version</th>
-              <th>Status</th>
-              <th>Actions</th>
+              <th>ENDPOINT</th>
+              <th>VOLUME</th>
+              <th>AVG LATENCY</th>
+              <th>ACTIVE VERSION</th>
+              <th>STATUS</th>
+              <th>ACTIONS</th>
             </tr>
           </thead>
           <tbody id="routes-tbody">
-            <tr>
-              <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">
-                Listening for incoming requests...
-              </td>
-            </tr>
+            <tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">Listening for incoming traffic...</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- Tab 2: Candidate Diffs -->
-    <div id="tab-optimizations" class="tab-content">
-      <div id="candidates-container">
-        <div class="explain-card">
-          <div class="explain-header">
-            <strong style="color: var(--accent-blue);">Evolution & Sandboxed Candidates</strong>
-            <span class="badge badge-green" id="candidate-count-badge">0 Candidates</span>
-          </div>
-          <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1rem;">
-            SEIM continuously scans route code for optimization opportunities (e.g., N+1 queries, unindexed finds, sequential async calls, and missing caches). Inspect diffs and control promotions below.
-          </p>
-          <div id="candidates-list" style="display: grid; gap: 1rem;">
-            <div style="color: var(--text-muted); font-size: 0.85rem;">No active evolution candidates in storage.</div>
-          </div>
+    <!-- Tab 5: Candidate Diffs -->
+    <div id="tab-optimizations" class="tab-content" role="tabpanel" tabindex="0">
+      <div class="card">
+        <div class="card-title" style="color: var(--text);">EVOLUTION & SANDBOXED CANDIDATES</div>
+        <div id="candidates-list" style="display: grid; gap: 1rem; margin-top: 1rem;">
+          <div style="color: var(--text-muted); font-size: 0.85rem;">No active evolution candidates in storage.</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab 3: Visitor Behavior & React -->
-    <div id="tab-behavior" class="tab-content">
+    <!-- Tab 6: Visitor Behavior & React -->
+    <div id="tab-behavior" class="tab-content" role="tabpanel" tabindex="0">
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
         <div class="card">
-          <div class="card-title">Discovered Feature Opportunities (404s & Hot Paths)</div>
+          <div class="card-title">VISITOR PATTERNS (404S & HOT PATHS)</div>
           <div id="behavior-patterns" style="margin-top: 1rem; display: grid; gap: 0.75rem; font-size: 0.85rem;">
             <div style="color: var(--text-muted);">Tracking user journeys...</div>
           </div>
         </div>
         <div class="card">
-          <div class="card-title">Scaffolded React Frontend Components</div>
+          <div class="card-title">SCAFFOLDED REACT TSX COMPONENTS</div>
           <div id="react-components-list" style="margin-top: 1rem; display: grid; gap: 0.75rem; font-size: 0.85rem;">
-            <div style="color: var(--text-muted);">No autonomous frontend components scaffolded yet.</div>
+            <div style="color: var(--text-muted);">No React frontend components scaffolded yet.</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Tab 4: Live Events -->
-    <div id="tab-events" class="tab-content">
-      <div class="explain-card">
-        <div class="explain-header">
-          <strong style="color: var(--accent-green);">Live Optimization & Lifecycle Events</strong>
-          <span class="badge badge-green" id="events-count-badge">0 Events</span>
-        </div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1rem;">
-          Real-time stream of SEIM lifecycle events — optimization detections, promotions, rollbacks, feature discoveries, and errors.
-          Events are kept in a ring buffer (last 100).
-        </p>
-        <div id="events-log" style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.82rem; font-family: monospace; max-height: 400px; overflow-y: auto;">
+    <!-- Tab 7: Live Events -->
+    <div id="tab-events" class="tab-content" role="tabpanel" tabindex="0">
+      <div class="card">
+        <div class="card-title">REAL-TIME LIFECYCLE EVENT STREAM</div>
+        <div id="events-log" style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.82rem; font-family: 'Space Mono', monospace; max-height: 450px; overflow-y: auto; margin-top: 1rem;">
           <div style="color: var(--text-muted);">Waiting for events...</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab 5: Developer JSON -->
-    <div id="tab-developer" class="tab-content">
+    <!-- Tab 8: Raw State -->
+    <div id="tab-developer" class="tab-content" role="tabpanel" tabindex="0">
       <pre id="json-viewer">Loading state...</pre>
     </div>
   </main>
 
-  <!-- Diff Viewer Modal -->
-  <div id="diff-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 100; align-items: center; justify-content: center; padding: 2rem;">
-    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 0.75rem; width: 100%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;">
-      <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--card-border); display: flex; justify-content: space-between; align-items: center;">
-        <h3 id="diff-modal-title" style="font-size: 1.1rem; color: var(--accent-blue); font-weight: 600;">Candidate Code Diff</h3>
-        <button onclick="closeDiffModal()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.25rem; cursor: pointer;">&times;</button>
+  <!-- Diff & PR Modal -->
+  <div id="diff-modal" role="dialog" aria-modal="true" aria-labelledby="diff-modal-title" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; padding: 2rem;">
+    <div tabindex="-1" style="background: var(--card-bg); border: 3px solid var(--border); box-shadow: var(--shadow); width: 100%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column;">
+      <div style="padding: 1rem 1.5rem; border-bottom: 2px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <div id="diff-modal-title" style="font-family: 'Space Mono', monospace; font-size: 1rem; font-weight: 700; text-transform: uppercase;">CODE INSPECTION</div>
+        <button onclick="closeDiffModal()" class="btn">[ CLOSE ]</button>
       </div>
       <div id="diff-modal-body" style="padding: 1.5rem; overflow-y: auto; flex: 1;">
-        <pre id="diff-code-view" style="color: #10b981; white-space: pre-wrap; font-size: 0.85rem;"></pre>
-      </div>
-      <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--card-border); display: flex; justify-content: flex-end; gap: 0.75rem;">
-        <button onclick="closeDiffModal()" style="padding: 0.5rem 1rem; background: var(--card-border); border: none; border-radius: 0.375rem; color: var(--text-main); cursor: pointer;">Close</button>
+        <pre id="diff-code-view" style="white-space: pre-wrap;"></pre>
       </div>
     </div>
   </div>
 
   <script>
     const studioPath = "${instance.config.studioPath || '/seim'}";
-    let currentCandidates = [];
+    let currentTheme = localStorage.getItem('seim_theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    updateThemeButton();
 
-    function switchTab(tabName) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-      
-      event.target.classList.add('active');
-      document.getElementById('tab-' + tabName).classList.add('active');
+    window._studioModalData = new Map();
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
     }
 
-    function openDiffModal(title, code) {
-      document.getElementById('diff-modal-title').textContent = title;
-      document.getElementById('diff-code-view').textContent = code;
-      document.getElementById('diff-modal').style.display = 'flex';
+    function toggleTheme() {
+      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', currentTheme);
+      localStorage.setItem('seim_theme', currentTheme);
+      updateThemeButton();
+    }
+
+    function updateThemeButton() {
+      const btn = document.getElementById('theme-toggle-btn');
+      if (btn) {
+        btn.textContent = currentTheme === 'dark' ? '[ THEME: LIGHT ]' : '[ THEME: DARK ]';
+      }
+    }
+
+    function switchTab(tabName, selectedButton) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-selected', 'false');
+      });
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      if (!selectedButton) return;
+      selectedButton.classList.add('active');
+      selectedButton.setAttribute('aria-selected', 'true');
+      const panel = document.getElementById('tab-' + tabName);
+      if (panel) panel.classList.add('active');
+    }
+
+    function showStoredModal(id) {
+      const data = window._studioModalData.get(id);
+      if (data) {
+        document.getElementById('diff-modal-title').textContent = data.title;
+        document.getElementById('diff-code-view').textContent = data.code;
+        document.getElementById('diff-modal').style.display = 'flex';
+      }
     }
 
     function closeDiffModal() {
       document.getElementById('diff-modal').style.display = 'none';
     }
 
+    async function triggerCreatePr(issueId, routeKey) {
+      try {
+        const res = await fetch(studioPath + '/api/create-pr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ issueId, routeKey })
+        }).then(r => r.json());
+        alert(res.success ? 'Pull Request #' + res.pr.number + ' generated on staging branch ' + res.pr.branchName : 'Failed to generate PR: ' + res.error);
+        updateDashboard();
+      } catch (err) {
+        alert('PR Generation error: ' + err.message);
+      }
+    }
+
+    async function triggerMergePr(prId) {
+      if (!confirm('Approve and merge ' + prId + ' to production?')) return;
+      try {
+        const res = await fetch(studioPath + '/api/merge-pr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prId })
+        }).then(r => r.json());
+        alert(res.message || (res.success ? 'PR Merged and deployed!' : 'Merge failed'));
+        updateDashboard();
+      } catch (err) {
+        alert('Merge error: ' + err.message);
+      }
+    }
+
     async function triggerRollback(routeKey) {
-      if (!confirm('Are you sure you want to rollback ' + routeKey + ' to original handler?')) return;
+      if (!confirm('Rollback ' + routeKey + ' to original version?')) return;
       try {
         const res = await fetch(studioPath + '/api/rollback', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ routeKey, reason: 'Manual studio action' })
+          body: JSON.stringify({ routeKey, reason: 'Manual Studio rollback' })
         }).then(r => r.json());
-        alert(res.message || (res.success ? 'Rollback completed!' : 'Rollback failed'));
+        alert(res.message || (res.success ? 'Rollback completed.' : 'Rollback failed.'));
         updateDashboard();
       } catch (err) {
         alert('Rollback error: ' + err.message);
@@ -601,7 +713,7 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ routeKey })
         }).then(r => r.json());
-        alert(res.message || (res.success ? 'Candidate promoted!' : 'Promotion failed'));
+        alert(res.message || (res.success ? 'Candidate promoted.' : 'Promotion failed.'));
         updateDashboard();
       } catch (err) {
         alert('Promote error: ' + err.message);
@@ -615,7 +727,7 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ issueId })
         }).then(r => r.json());
-        alert(res.message || (res.success ? 'Evolution started/completed!' : 'Evolution failed: ' + res.error));
+        alert(res.message || (res.success ? 'Issue evolved & deployed.' : 'Evolution failed: ' + res.error));
         updateDashboard();
       } catch (err) {
         alert('Evolve error: ' + err.message);
@@ -624,11 +736,11 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
 
     async function triggerDismissIssue(issueId) {
       try {
-        const res = await fetch(studioPath + '/api/dismiss-issue', {
+        await fetch(studioPath + '/api/dismiss-issue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ issueId })
-        }).then(r => r.json());
+        });
         updateDashboard();
       } catch (err) {
         alert('Dismiss error: ' + err.message);
@@ -637,66 +749,63 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
 
     async function updateDashboard() {
       try {
-        const [statusRes, metricsRes, candidatesRes, behaviorRes, eventsRes, changelogRes, issuesRes] = await Promise.all([
+        const [statusRes, metricsRes, candidatesRes, behaviorRes, eventsRes, changelogRes, issuesRes, prsRes] = await Promise.all([
           fetch(studioPath + '/api/status').then(r => r.json()).catch(() => ({})),
           fetch(studioPath + '/api/metrics').then(r => r.json()).catch(() => ({})),
           fetch(studioPath + '/api/candidates').then(r => r.json()).catch(() => ([])),
           fetch(studioPath + '/api/behavior').then(r => r.json()).catch(() => ({})),
           fetch(studioPath + '/api/events').then(r => r.json()).catch(() => ([])),
           fetch(studioPath + '/api/changelog').then(r => r.json()).catch(() => ([])),
-          fetch(studioPath + '/api/issues').then(r => r.json()).catch(() => ({ open: [], all: [] }))
+          fetch(studioPath + '/api/issues').then(r => r.json()).catch(() => ({ open: [], all: [] })),
+          fetch(studioPath + '/api/pull-requests').then(r => r.json()).catch(() => ([]))
         ]);
 
         const status = statusRes.status || statusRes || {};
         const metrics = metricsRes || {};
-        currentCandidates = candidatesRes || [];
+        const candidates = candidatesRes || [];
         const behavior = behaviorRes || {};
         const events = Array.isArray(eventsRes) ? eventsRes : [];
         const changelog = Array.isArray(changelogRes) ? changelogRes : [];
         const openIssues = issuesRes.open || [];
+        const prs = Array.isArray(prsRes) ? prsRes : [];
+
+        // Clear and rebuild modal data cache
+        window._studioModalData.clear();
 
         // Update stats
-        document.getElementById('val-opts').textContent = status.totalOptimizationsGenerated || 0;
-        document.getElementById('val-versions').textContent = status.totalOptimizationsPromoted || 0;
+        document.getElementById('val-shipped-count').textContent = changelog.length;
+        document.getElementById('val-pr-count').textContent = prs.filter(p => p.status === 'open').length;
         document.getElementById('val-rollbacks').textContent = status.totalRollbacks || 0;
-        document.getElementById('candidate-count-badge').textContent = currentCandidates.length + ' Candidates';
-        document.getElementById('events-count-badge').textContent = events.length + ' Events';
-        document.getElementById('shipped-count-badge').textContent = changelog.length + ' Changes Shipped';
-        document.getElementById('issues-count-badge').textContent = openIssues.length + ' Open Issues';
 
         // 1. Render Shipped Evolution Timeline
         const changelogContainer = document.getElementById('changelog-list');
         if (changelog.length === 0) {
-          changelogContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No autonomous changes shipped yet. Real-time visitor activity will trigger evolution.</div>';
+          changelogContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No autonomous changes recorded yet. Real-time visitor activity will trigger evolution.</div>';
         } else {
-          const typeColors = {
-            'new_feature': '#10b981',
-            'optimization': '#38bdf8',
-            'bug_fix': '#a855f7',
-            'ux_improvement': '#f59e0b',
-            'rollback': '#f43f5e',
-          };
           changelogContainer.innerHTML = changelog.map(item => {
-            const color = typeColors[item.type] || '#9ca3af';
-            const time = new Date(item.shippedAt).toLocaleString();
             const isLive = item.status === 'live';
             const hasCode = !!(item.code || item.diff);
+            const codeKey = 'cl_' + (item.id || item.timestamp || Math.random());
+            if (hasCode) {
+              window._studioModalData.set(codeKey, { title: 'CODE: ' + item.title, code: item.code || item.diff || '' });
+            }
 
             return \`
-              <div style="padding: 1rem; background: var(--bg-dark); border-radius: 0.5rem; border-left: 4px solid \${color}; border-top: 1px solid var(--card-border); border-right: 1px solid var(--card-border); border-bottom: 1px solid var(--card-border);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
-                  <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <span style="font-weight: 700; color: \${color}; font-size: 0.95rem;">\${item.title}</span>
-                    <span class="badge \${isLive ? 'badge-green' : 'badge-blue'}">\${isLive ? '🟢 Live in Production' : '↩️ Rolled Back'}</span>
+              <div class="card" style="border-left: 6px solid var(--maroon);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                  <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="tag tag-maroon">[\${escapeHtml(item.type).toUpperCase()}]</span>
+                    <strong style="font-size: 1rem;">\${escapeHtml(item.title)}</strong>
+                    <span class="tag \${isLive ? 'tag-green' : 'tag-rose'}">[\${isLive ? 'LIVE' : 'ROLLED BACK'}]</span>
                   </div>
-                  <span style="color: var(--text-muted); font-size: 0.75rem;">\${time}</span>
+                  <span style="font-family: 'Space Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">\${escapeHtml(new Date(item.shippedAt).toLocaleString())}</span>
                 </div>
-                <div style="color: var(--text-main); font-size: 0.85rem; line-height: 1.4; margin-bottom: 0.5rem;">\${item.description}</div>
-                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: var(--text-muted);">
-                  <span>Path: <code style="color: var(--accent-blue);">\${item.path}</code> \${item.affectedSessions ? '• Affected: ' + item.affectedSessions + ' sessions' : ''}</span>
+                <div style="font-size: 0.88rem; line-height: 1.4; margin-bottom: 0.75rem;">\${escapeHtml(item.description)}</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-family: 'Space Mono', monospace; color: var(--text-muted);">
+                  <span>PATH: \${escapeHtml(item.path)} \${item.affectedSessions ? '• SESSIONS: ' + item.affectedSessions : ''}</span>
                   <div style="display: flex; gap: 0.5rem;">
-                    \${hasCode ? \`<button onclick="openDiffModal('Code: \${item.title}', decodeURIComponent('\${encodeURIComponent(item.code || item.diff || '')}'))" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background: var(--card-border); border: none; color: var(--text-main); border-radius: 0.25rem; cursor: pointer;">View Code</button>\` : ''}
-                    \${isLive ? \`<button onclick="triggerRollback('\${item.path}')" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); border: 1px solid var(--accent-rose); color: var(--accent-rose); border-radius: 0.25rem; cursor: pointer;">Rollback</button>\` : ''}
+                    \${hasCode ? \`<button onclick="showStoredModal('\${codeKey}')" class="btn">[ VIEW CODE ]</button>\` : ''}
+                    \${isLive ? \`<button onclick="triggerRollback('\${escapeHtml(item.path)}')" class="btn btn-rose">[ ROLLBACK ]</button>\` : ''}
                   </div>
                 </div>
               </div>
@@ -704,46 +813,74 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
           }).join('');
         }
 
-        // 2. Render Open Issues Stream
+        // 2. Render Pull Requests Tab
+        const prsContainer = document.getElementById('prs-list');
+        if (prs.length === 0) {
+          prsContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No open pull requests generated. Click [GENERATE PR] on any detected issue or candidate.</div>';
+        } else {
+          prsContainer.innerHTML = prs.map(pr => {
+            const isOpen = pr.status === 'open';
+            const descKey = 'pr_desc_' + pr.id;
+            const patchKey = 'pr_patch_' + pr.id;
+            window._studioModalData.set(descKey, { title: 'PR DESCRIPTION: ' + pr.title, code: pr.description || '' });
+            window._studioModalData.set(patchKey, { title: 'PR PATCH: ' + pr.title, code: pr.patch || '' });
+
+            return \`
+              <div class="card" style="border-left: 6px solid var(--border);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                  <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="tag tag-maroon">[PR #\${pr.number}]</span>
+                    <strong style="font-size: 1rem;">\${escapeHtml(pr.title)}</strong>
+                    <span class="tag \${isOpen ? 'tag-green' : 'tag-rose'}">[\${escapeHtml(pr.status).toUpperCase()}]</span>
+                  </div>
+                  <span style="font-family: 'Space Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">BRANCH: \${escapeHtml(pr.branchName)}</span>
+                </div>
+                <div style="font-size: 0.88rem; line-height: 1.4; margin-bottom: 0.75rem;">Target Endpoint: <code>\${escapeHtml(pr.targetPath)}</code></div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <div style="display: flex; gap: 0.5rem;">
+                    <button onclick="showStoredModal('\${descKey}')" class="btn">[ VIEW DESCRIPTION ]</button>
+                    <button onclick="showStoredModal('\${patchKey}')" class="btn">[ VIEW PATCH ]</button>
+                  </div>
+                  \${isOpen ? '<span class="tag tag-amber">[ REVIEW IN GITHUB ]</span>' : ''}
+                </div>
+              </div>
+            \`;
+          }).join('');
+        }
+
+        // 3. Render Issues Stream
         const issuesContainer = document.getElementById('issues-list');
         if (openIssues.length === 0) {
           issuesContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No open issues detected across active visitor sessions. All systems healthy.</div>';
         } else {
           issuesContainer.innerHTML = openIssues.map(iss => {
             const isCrit = iss.severity === 'critical' || iss.severity === 'high';
-            const sevColor = isCrit ? 'var(--accent-rose)' : 'var(--accent-amber)';
 
             return \`
-              <div style="padding: 1rem; background: var(--bg-dark); border-radius: 0.5rem; border: 1px solid var(--card-border); display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+              <div class="card" style="display: flex; justify-content: space-between; align-items: center; gap: 1.5rem;">
                 <div style="flex: 1; min-width: 0;">
-                  <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
-                    <span style="font-weight: 600; color: \${sevColor}; font-size: 0.9rem;">[\${iss.type.toUpperCase()}] \${iss.path}</span>
-                    <span class="badge \${isCrit ? 'badge-blue' : 'badge-amber'}">\${iss.severity}</span>
-                    <span style="color: var(--text-muted); font-size: 0.75rem;">\${iss.affectedSessions} sessions affected</span>
+                  <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.4rem;">
+                    <span class="tag \${isCrit ? 'tag-rose' : 'tag-amber'}">[\${escapeHtml(iss.severity).toUpperCase()}]</span>
+                    <strong>\${escapeHtml(iss.type).toUpperCase()}: \${escapeHtml(iss.path)}</strong>
+                    <span style="font-family: 'Space Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">\${iss.affectedSessions} SESSIONS AFFECTED</span>
                   </div>
-                  <div style="color: var(--text-main); font-size: 0.85rem;">\${iss.suggestedAction}</div>
+                  <div style="font-size: 0.88rem;">\${escapeHtml(iss.suggestedAction)}</div>
                 </div>
                 <div style="display: flex; gap: 0.5rem; flex-shrink: 0;">
-                  <button onclick="triggerEvolveIssue('\${iss.id}')" style="padding: 0.35rem 0.8rem; font-size: 0.8rem; background: rgba(16, 185, 129, 0.2); border: 1px solid var(--accent-green); color: var(--accent-green); border-radius: 0.375rem; cursor: pointer; font-weight: 600;">⚡ Evolve Now</button>
-                  <button onclick="triggerDismissIssue('\${iss.id}')" style="padding: 0.35rem 0.6rem; font-size: 0.8rem; background: var(--card-border); border: none; color: var(--text-muted); border-radius: 0.375rem; cursor: pointer;">Dismiss</button>
+                  <button onclick="triggerCreatePr('\${escapeHtml(iss.id)}', null)" class="btn btn-maroon">[ GENERATE PR ]</button>
+                  <button onclick="triggerEvolveIssue('\${escapeHtml(iss.id)}')" class="btn btn-green">[ AUTONOMOUS EVOLVE ]</button>
+                  <button onclick="triggerDismissIssue('\${escapeHtml(iss.id)}')" class="btn">[ DISMISS ]</button>
                 </div>
               </div>
             \`;
           }).join('');
         }
 
-        // Render Routes Table
+        // 4. Render Routes Table
         const tbody = document.getElementById('routes-tbody');
         const routes = Object.keys(metrics.routes || metrics);
-
         if (routes.length === 0) {
-          tbody.innerHTML = \`
-            <tr>
-              <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">
-                No traffic detected yet. Send HTTP requests to your application to see live evolution metrics.
-              </td>
-            </tr>
-          \`;
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No traffic detected yet. Send HTTP requests to see metrics.</td></tr>';
         } else {
           tbody.innerHTML = routes.map(routeKey => {
             const r = (metrics.routes || metrics)[routeKey];
@@ -753,34 +890,60 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
 
             return \`
               <tr>
-                <td style="font-weight: 600; color: var(--accent-blue);">\${routeKey}</td>
-                <td>\${r.requestCount || 0} reqs</td>
-                <td>\${avg} ms</td>
-                <td><span class="badge \${isPromoted ? 'badge-purple' : 'badge-blue'}">\${isPromoted ? '🧬 Evolved' : '📌 Original'}</span></td>
-                <td><span class="badge badge-green">🟢 Active</span></td>
+                <td style="font-family: 'Space Mono', monospace; font-weight: 700; color: var(--maroon-accent);">\${escapeHtml(routeKey)}</td>
+                <td style="font-family: 'Space Mono', monospace;">\${r.requestCount || 0} REQS</td>
+                <td style="font-family: 'Space Mono', monospace;">\${avg} MS</td>
+                <td><span class="tag \${isPromoted ? 'tag-maroon' : 'tag-amber'}">[\${isPromoted ? 'EVOLVED' : 'ORIGINAL'}]</span></td>
+                <td><span class="tag tag-green">[ACTIVE]</span></td>
                 <td>
-                  <button onclick="triggerPromote('\${routeKey}')" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background: rgba(168, 85, 247, 0.2); border: 1px solid var(--accent-purple); color: var(--accent-purple); border-radius: 0.25rem; cursor: pointer; margin-right: 0.4rem;">Promote</button>
-                  <button onclick="triggerRollback('\${routeKey}')" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); border: 1px solid var(--accent-rose); color: var(--accent-rose); border-radius: 0.25rem; cursor: pointer;">Rollback</button>
+                  <button onclick="triggerPromote('\${escapeHtml(routeKey)}')" class="btn" style="margin-right: 0.35rem;">[ PROMOTE ]</button>
+                  <button onclick="triggerRollback('\${escapeHtml(routeKey)}')" class="btn btn-rose">[ ROLLBACK ]</button>
                 </td>
               </tr>
             \`;
           }).join('');
         }
 
-        // Render Behavior & React
+        // 5. Render Candidates
+        const candidatesContainer = document.getElementById('candidates-list');
+        if (candidates.length === 0) {
+          candidatesContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No active evolution candidates in storage.</div>';
+        } else {
+          candidatesContainer.innerHTML = candidates.map(c => {
+            const candKey = 'cand_' + c.id;
+            window._studioModalData.set(candKey, { title: 'CANDIDATE DIFF: ' + c.routeKey, code: c.optimizedCode || '' });
+
+            return \`
+              <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="display: flex; gap: 0.5rem; margin-bottom: 0.25rem;">
+                    <span class="tag tag-maroon">[\${escapeHtml(c.pattern || 'CUSTOM')}]</span>
+                    <strong>\${escapeHtml(c.routeKey)}</strong>
+                  </div>
+                  <div style="font-size: 0.8rem; color: var(--text-muted);">Candidate ID: \${escapeHtml(c.id)}</div>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                  <button onclick="showStoredModal('\${candKey}')" class="btn">[ VIEW DIFF ]</button>
+                  <button onclick="triggerCreatePr(null, '\${escapeHtml(c.routeKey)}')" class="btn btn-maroon">[ GENERATE PR ]</button>
+                </div>
+              </div>
+            \`;
+          }).join('');
+        }
+
+        // 6. Render Behavior
         const patternsContainer = document.getElementById('behavior-patterns');
         const patterns = behavior.patterns || [];
         if (patterns.length === 0) {
-          patternsContainer.innerHTML = '<div style="color: var(--text-muted);">No anomalous visitor patterns detected yet (minimum threshold not reached).</div>';
+          patternsContainer.innerHTML = '<div style="color: var(--text-muted);">No visitor patterns detected yet.</div>';
         } else {
           patternsContainer.innerHTML = patterns.map(p => \`
-            <div style="padding: 0.75rem; background: var(--bg-dark); border-radius: 0.375rem; border: 1px solid var(--card-border);">
-              <div style="display: flex; justify-content: space-between; font-weight: 600; color: var(--accent-amber);">
-                <span>Type: \${p.type}</span>
-                <span>Hits: \${p.frequency}</span>
+            <div style="padding: 0.75rem; border: 1px solid var(--border); margin-bottom: 0.5rem;">
+              <div style="display: flex; justify-content: space-between; font-weight: 700;">
+                <span class="tag tag-amber">[\${escapeHtml(p.type).toUpperCase()}]</span>
+                <span style="font-family: 'Space Mono', monospace;">\${p.frequency} HITS</span>
               </div>
-              <div style="margin-top: 0.25rem; color: var(--text-main);">Path: <code>\${p.path}</code></div>
-              <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">Affected Sessions: \${p.affectedSessions}</div>
+              <div style="margin-top: 0.35rem;"><code>\${escapeHtml(p.path)}</code></div>
             </div>
           \`).join('');
         }
@@ -790,63 +953,44 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
         if (components.length === 0) {
           reactContainer.innerHTML = '<div style="color: var(--text-muted);">No React frontend components scaffolded yet.</div>';
         } else {
-          reactContainer.innerHTML = components.map(c => \`
-            <div style="padding: 0.75rem; background: var(--bg-dark); border-radius: 0.375rem; border: 1px solid var(--card-border);">
-              <div style="display: flex; justify-content: space-between; font-weight: 600; color: var(--accent-blue);">
-                <span>\${c.name}</span>
-                <span class="badge badge-purple">v\${c.version}</span>
-              </div>
-              <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">Route: \${c.routePath || 'Component only'}</div>
-              <button onclick="openDiffModal('React Component: \${c.name}', decodeURIComponent('\${encodeURIComponent(c.code)}'))" style="margin-top: 0.5rem; padding: 0.2rem 0.5rem; font-size: 0.75rem; background: var(--card-border); border: none; color: var(--text-main); border-radius: 0.25rem; cursor: pointer;">View TSX Source</button>
-            </div>
-          \`).join('');
-        }
+          reactContainer.innerHTML = components.map(c => {
+            const reactKey = 'react_' + c.id;
+            window._studioModalData.set(reactKey, { title: 'REACT TSX: ' + c.name, code: c.code || '' });
 
-        // Render Live Events
-        const eventsLog = document.getElementById('events-log');
-        if (events.length === 0) {
-          eventsLog.innerHTML = '<div style="color: var(--text-muted);">Waiting for events... (events appear as SEIM detects optimization opportunities, promotes candidates, or encounters errors)</div>';
-        } else {
-          const eventColors = {
-            'optimization:detected': '#f59e0b',
-            'optimization:promoted': '#10b981',
-            'optimization:rejected': '#f43f5e',
-            'optimization:rolledback': '#f43f5e',
-            'feature:discovered': '#a855f7',
-            'feature:deployed': '#10b981',
-            'frontend:component_generated': '#38bdf8',
-            'frontend:evolved': '#38bdf8',
-            'issue:detected': '#f59e0b',
-            'issue:resolved': '#10b981',
-            'metrics:threshold': '#f59e0b',
-            'error:sandbox': '#f43f5e',
-            'error:validation': '#f43f5e',
-            'lifecycle:started': '#10b981',
-          };
-          eventsLog.innerHTML = [...events].reverse().map(e => {
-            const color = eventColors[e.event] || '#9ca3af';
-            const time = new Date(e.ts).toLocaleTimeString();
             return \`
-              <div style="padding: 0.5rem 0.75rem; background: var(--bg-dark); border-radius: 0.375rem; border-left: 3px solid \${color}; display: flex; gap: 0.75rem; align-items: flex-start;">
-                <span style="color: var(--text-muted); font-size: 0.75rem; white-space: nowrap; padding-top: 1px;">\${time}</span>
-                <div style="flex: 1; min-width: 0;">
-                  <span style="color: \${color}; font-weight: 600;">\${e.event}</span>
-                  <span style="color: var(--text-muted); margin-left: 0.5rem; font-size: 0.78rem;">\${e.payload?.routeKey || e.payload?.path || e.payload?.title || ''}</span>
+              <div style="padding: 0.75rem; border: 1px solid var(--border); margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <strong>\${escapeHtml(c.name)}</strong>
+                  <div style="font-size: 0.75rem; color: var(--text-muted);">\${escapeHtml(c.routePath || 'Component')}</div>
                 </div>
+                <button onclick="showStoredModal('\${reactKey}')" class="btn">[ VIEW TSX ]</button>
               </div>
             \`;
           }).join('');
         }
 
-        // Render Raw JSON
-        document.getElementById('json-viewer').textContent = JSON.stringify({ status, metrics, behavior, changelog: changelog.slice(0, 20), openIssues, recentEvents: events.slice(-20) }, null, 2);
+        // 7. Render Events Log
+        const eventsLog = document.getElementById('events-log');
+        if (events.length === 0) {
+          eventsLog.innerHTML = '<div style="color: var(--text-muted);">Waiting for events...</div>';
+        } else {
+          eventsLog.innerHTML = [...events].reverse().map(e => \`
+            <div style="padding: 0.5rem 0.75rem; border-left: 3px solid var(--maroon); border-bottom: 1px solid var(--border); display: flex; gap: 1rem;">
+              <span style="color: var(--text-muted);">[\${escapeHtml(new Date(e.ts).toLocaleTimeString())}]</span>
+              <strong>\${escapeHtml(e.event).toUpperCase()}</strong>
+              <span style="color: var(--text-muted);">\${escapeHtml(e.payload?.routeKey || e.payload?.path || e.payload?.title || '')}</span>
+            </div>
+          \`).join('');
+        }
+
+        // 8. Render Raw State
+        document.getElementById('json-viewer').textContent = JSON.stringify({ status, metrics, changelog: changelog.slice(0, 10), openIssues, prs }, null, 2);
 
       } catch (err) {
-        console.error('Failed to update dashboard', err);
+        console.error('Dashboard update error', err);
       }
     }
 
-    // Initial load and poll every 3s
     updateDashboard();
     setInterval(updateDashboard, 3000);
   </script>
@@ -855,3 +999,39 @@ export function createStudioHandler(instance: SeimInstance): RequestHandler {
   };
 }
 
+function isMutation(req: Request): boolean {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase());
+}
+
+function isSameOriginRequest(req: Request): boolean {
+  const headers = req.headers || {};
+  const origin = headers.origin;
+  if (!origin) return true;
+  const host = headers.host;
+  if (typeof origin !== 'string' || typeof host !== 'string') return false;
+  try {
+    const protocol = (headers['x-forwarded-proto'] as string || req.protocol || 'http').split(',')[0].trim();
+    const parsed = new URL(origin);
+    return parsed.protocol === `${protocol}:` && parsed.host === host;
+  } catch { return false; }
+}
+
+function sanitizeStudioPayload(value: any, depth = 0): any {
+  if (depth > 4) return '[TRUNCATED]';
+  if (typeof value === 'string') {
+    return value
+      .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s'";]+/gi, '$1[REDACTED]')
+      .replace(/((?:api[_-]?key|token|secret|password|private[_-]?key)\s*[:=]\s*)[^\s'";,]+/gi, '$1[REDACTED]')
+      .slice(0, 500);
+  }
+  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeStudioPayload(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const output: Record<string, any> = {};
+    for (const [key, item] of Object.entries(value).slice(0, 50)) {
+      output[key] = /^(code|content|sourceCode|originalCode|optimizedCode|token|secret|password|privateKey)$/i.test(key)
+        ? '[REDACTED]' : sanitizeStudioPayload(item, depth + 1);
+    }
+    return output;
+  }
+  return value;
+}

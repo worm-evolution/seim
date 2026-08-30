@@ -28,7 +28,7 @@ export class SecurityGate {
     if (this.config.security.blockSecretUsage && this.introducesSecret(newCode)) {
       return { pass: false, reason: 'Generated code may leak or expose secrets' };
     }
-    if (!this.config.security.allowedPatternModels.includes(candidate.pattern)) {
+    if (candidate.pattern !== 'scaffold' && this.config.security.allowedPatternModels && !this.config.security.allowedPatternModels.includes(candidate.pattern)) {
       return { pass: false, reason: `Optimization pattern ${candidate.pattern} is not allowed` };
     }
 

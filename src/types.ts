@@ -1,4 +1,7 @@
 import { LogLevel } from './logger';
+import type { SoftwareEngineer } from './engineer/engineer';
+import type { ApplicationControlPlane } from './engineer/controlPlane';
+import type { ReactApplicationContext } from './react/types';
 
 export type SeimMode = 'restrict' | 'bypass';
 
@@ -64,6 +67,9 @@ export interface SeimConfig {
     enabled: boolean;
     headers?: Record<string, string>;
     responsePath?: string;
+    flashModel?: string;
+    proModel?: string;
+    criticModel?: string;
   };
   experiment: {
     confidenceThreshold: number;
@@ -77,7 +83,7 @@ export interface SeimConfig {
     sandboxTimeoutMs?: number;
   };
   storage: {
-    type: 'memory' | 'sqlite' | 'redis';
+    type: 'memory' | 'file' | 'redis';
     connection?: string;
   };
   security: {
@@ -149,6 +155,8 @@ export interface SeimConfig {
     hmrSignalPath?: string;
     /** Path to write route manifest (e.g., seim-routes.tsx) */
     routesFile?: string;
+    /** Optional application facts used when generating runtime React components */
+    applicationContext?: ReactApplicationContext;
   };
 
   /** Product evolution changelog ledger */
@@ -165,6 +173,47 @@ export interface SeimConfig {
   patterns?: {
     /** Whether to run custom patterns in addition to built-in ones. Default: true */
     enabled?: boolean;
+  };
+
+  /** Built-in software engineer configuration */
+  engineer?: {
+    enabled?: boolean;
+    rootDir?: string;
+    baseBranch?: string;
+    maxVerificationMs?: number;
+    repository?: "memory" | "github";
+    persistence?: "memory" | "file" | "postgres";
+    postgres?: { client: any; tableName?: string };
+    github?: {
+      owner: string;
+      repository: string;
+      token?: string;
+      apiBaseUrl?: string;
+      app?: { appId?: string | number; installationId?: string | number; privateKey?: string };
+    };
+    feedback?: {
+      enabled?: boolean;
+      webhookSecret?: string;
+      allowedBranches?: string[];
+      allowedWorkflowPrefixes?: string[];
+      maxPayloadBytes?: number;
+      maxTransientRetries?: number;
+      maxRepairsPerFingerprint?: number;
+    };
+  };
+
+  /** Control center & Studio authentication configuration */
+  auth?: {
+    /** Whether authentication is required. Defaults to true in production. */
+    enabled?: boolean;
+    /** Secret API key or Bearer token */
+    secret?: string;
+    /** Custom API key */
+    apiKey?: string;
+    /** Basic Auth username. Default: 'admin' */
+    username?: string;
+    /** Basic Auth password */
+    password?: string;
   };
 }
 
@@ -328,6 +377,20 @@ export interface SeimInstance {
   orchestrator?: any;
   frontendEvolver?: any;
   changelog?: any;
+  prGenerator?: any;
+  scaffolder?: any;
+  runtimeOptimizer?: any;
+  astOptimizer?: any;
+  moduleGraph?: any;
+  fuzzer?: any;
+  schemaEvolution?: any;
+  multiModel?: any;
+  intentAnalyzer?: any;
+  intelligentOptimizer?: any;
+  engineer?: SoftwareEngineer;
+  applicationControlPlane?: ApplicationControlPlane;
+  githubFeedback?: import('./feedback/githubFeedbackLoop').GitHubFeedbackLoop;
+  githubWebhook?: any;
 }
 
 export type RequestListener = (req: GenericRequest, res: GenericResponse, next: () => void) => void;

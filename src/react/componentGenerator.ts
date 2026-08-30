@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
 import { ReactComponent, FrontendRouteConfig, ConsistencyCheck, ComponentRequest } from './types';
+import type { ReactApplicationContext } from './types';
 import { ReactConsistencyChecker } from './consistencyChecker';
 import { ReactComponentRegistry } from './componentRegistry';
 import { LLMClient } from '../ai';
-import { SeimConfig } from '../types';
+import type { SeimConfig } from '../types';
 import { SeimEventBus } from '../events';
 import { Logger } from '../logger';
 
@@ -21,15 +22,22 @@ export class ReactComponentGenerator {
   }
 
   public async generate(request: ComponentRequest): Promise<ReactComponent> {
+    assertComponentName(request.name);
+    const applicationContext = request.applicationContext || this.config.frontend?.applicationContext;
     const systemPrompt = `You are a senior React developer. Generate a complete, functional React component (TSX) based on the request.
 Do not use markdown code block backticks in the final output unless required by formatting. Just provide the raw TSX code.
-Ensure it includes React imports, a default export for the component, and appropriate hooks.`;
+Ensure it includes React imports, a default export for the component, and appropriate hooks.
+Follow the supplied application context. Reuse its router, styling, state, and data-fetching conventions.
+Do not invent dependencies that are not already present in the application.`;
 
-    const userPrompt = `Generate a component named ${request.name}.
-Intent: ${request.intent}
-Endpoints to call: ${request.dataEndpoints?.join(', ') || 'None'}
-Is Page: ${request.isPage ? 'Yes' : 'No'}
-Visuals: ${request.styleHints || 'Standard UI'}`;
+    const userPrompt = [
+      "Generate a component named " + request.name,
+      "Intent: " + request.intent,
+      "Endpoints to call: " + (request.dataEndpoints?.join(", ") || "None"),
+      "Is Page: " + (request.isPage ? "Yes" : "No"),
+      "Visuals: " + (request.styleHints || "Standard UI"),
+      "Application context: " + JSON.stringify(applicationContext || { framework: "react", router: "unknown", dependencies: [], stylingLibraries: [], stateLibraries: [], dataLibraries: [], existingRoutes: [] }),
+    ].join("\n");
 
     let code = '';
     try {
@@ -44,9 +52,12 @@ Visuals: ${request.styleHints || 'Standard UI'}`;
       code = this.buildFallbackTemplate(request);
     }
 
+    code = ensureFrameworkDirectives(code, applicationContext);
+
     const structureCheck = this.checker.validateStructure(code, request.name);
     if (!structureCheck.passed) {
       this.logger.warn(`Generated component ${request.name} failed structure validation: ${JSON.stringify(structureCheck.issues)}`);
+      throw new Error(`Generated component ${request.name} failed structure validation`);
     }
 
     const consistencyHash = this.checker.computeHash(code);
@@ -126,23 +137,27 @@ Visuals: ${request.styleHints || 'Standard UI'}`;
       name: `BehaviorDrivenComponent_${Math.floor(Math.random()*1000)}`,
       intent: `Generated for user journey: ${userJourneyDescription}`,
       routePath: path,
-      isPage: true
+      isPage: true,
+      applicationContext: this.config.frontend?.applicationContext
     };
     return this.generate(request);
   }
 
   private buildFallbackTemplate(request: ComponentRequest): string {
+    assertComponentName(request.name);
+    const intentDescription = JSON.stringify(request.intent || '');
     const hasEndpoints = request.dataEndpoints && request.dataEndpoints.length > 0;
     
     let fetchLogic = '';
-    if (hasEndpoints) {
+    const endpoint = hasEndpoints ? safeFrontendEndpoint(request.dataEndpoints![0]) : undefined;
+    if (endpoint) {
       fetchLogic = `
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
 
-    fetch('${request.dataEndpoints![0]}', { signal: controller.signal })
+    fetch(${JSON.stringify(endpoint)}, { signal: controller.signal })
       .then(r => {
         if (!r.ok) throw new Error(\`HTTP error \${r.status}\`);
         return r.json();
@@ -175,7 +190,8 @@ export interface ${request.name}Props {
 }
 
 export default function ${request.name}({ title = '${request.name}', className = '' }: ${request.name}Props) {
-  const [data, setData] = useState<any[]>([]);
+  const componentIntent = ${intentDescription};
+  const [data, setData] = useState<unknown[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 ${fetchLogic}
@@ -187,6 +203,8 @@ ${fetchLogic}
       </div>
     );
   }
+
+  
 
   if (error) {
     return (
@@ -202,7 +220,7 @@ ${fetchLogic}
       <header style={{ marginBottom: '1.5rem', borderBottom: '1px solid #e5e7eb', paddingBottom: '0.75rem' }}>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: '#111827' }}>{title}</h1>
         <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.25rem' }}>
-          Autonomous component for: ${request.intent}
+          Autonomous component for: {componentIntent}
         </p>
       </header>
       
@@ -224,4 +242,27 @@ ${fetchLogic}
 }
 `;
   }
+}
+
+function assertComponentName(name: string): void {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+    throw new Error('Invalid React component name');
+  }
+}
+
+function ensureFrameworkDirectives(code: string, context?: ReactApplicationContext): string {
+  if (context?.router === "next-app" && /\b(useState|useEffect|useContext)\b/.test(code) && !/^\s*["']use client["']/.test(code)) {
+    return [String.fromCharCode(39) + "use client" + String.fromCharCode(39) + ";", "", code].join(String.fromCharCode(10));
+  }
+  return code;
+}
+
+function safeFrontendEndpoint(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 2048) return undefined;
+  if (value.startsWith('/') && !value.startsWith('//') && !/[\u0000-\u001f<>"'`\\]/.test(value)) return value;
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password) return undefined;
+    return url.toString();
+  } catch { return undefined; }
 }

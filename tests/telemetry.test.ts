@@ -97,11 +97,11 @@ describe('Frontend Telemetry & Overrides', () => {
     expect(frontendOverrides.has('/dashboard')).toBe(true);
     expect(frontendOverrides.get('/dashboard')).toEqual({
       css: '#overflow-el { max-width: 100%; }',
-      js: 'console.log("Fixed accessibility");',
+      js: '',
     });
   });
 
-  it('should inject CSS/JS overrides and sensor script into HTML responses', async () => {
+  it('should inject only CSS overrides and the sensor script into HTML responses', async () => {
     // Populate overrides cache first
     frontendOverrides.set('/home', {
       css: '.card { overflow: hidden; }',
@@ -125,7 +125,36 @@ describe('Frontend Telemetry & Overrides', () => {
     });
 
     expect(responseBody).toContain('<style id="seim-overrides">.card { overflow: hidden; }</style>');
-    expect(responseBody).toContain('<script id="seim-js-overrides">console.log("override js");</script>');
+    expect(responseBody).not.toContain('seim-js-overrides');
+    expect(responseBody).not.toContain('override js');
     expect(responseBody).toContain('<script src="/seim/sensor.js" defer></script>');
+  });
+
+  it('should instrument streamed HTML responses used by static files', async () => {
+    const listener = createListener(config, deps)();
+    const req = { path: '/', method: 'GET' } as any;
+    let responseBody = Buffer.alloc(0);
+    const res = {
+      getHeader: jest.fn().mockReturnValue('text/html; charset=utf-8'),
+      removeHeader: jest.fn(),
+      write: jest.fn().mockImplementation((chunk: any) => {
+        responseBody = Buffer.concat([responseBody, Buffer.from(chunk)]);
+        return true;
+      }),
+      end: jest.fn().mockImplementation((chunk?: any) => {
+        if (chunk) responseBody = Buffer.concat([responseBody, Buffer.from(chunk)]);
+      }),
+      send: jest.fn(),
+    } as any;
+
+    await listener(req, res, () => {
+      res.write('<html><head><title>App</title></head><body>');
+      res.end('<main>Static app</main></body></html>');
+    });
+
+    const html = responseBody.toString('utf8');
+    expect(html).toContain('<main>Static app</main>');
+    expect(html).toContain('<script src="/seim/sensor.js" defer></script>');
+    expect(res.removeHeader).toHaveBeenCalledWith('content-length');
   });
 });
